@@ -36,9 +36,6 @@ endif()
 # Printing the compiling flags
 message(STATUS "Compiler flags: ${CMAKE_CXX_FLAGS}")
 
-# Catkin dependencies
-find_package(catkin REQUIRED COMPONENTS roscpp obindex2)
-
 # Other packages
 find_package(OpenCV REQUIRED) # OpenCV
 find_package(Boost REQUIRED COMPONENTS system filesystem)
@@ -48,20 +45,17 @@ if (OPENMP_FOUND)
   set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
 endif()
 
-# Defining the package
-catkin_package(
-    INCLUDE_DIRS include external
-    LIBRARIES lcdetector
-    CATKIN_DEPENDS roscpp obindex2
-    DEPENDS OpenCV Boost
-)
 
 include_directories(include
                     external
-                    ${catkin_INCLUDE_DIRS}
                     ${OpenCV_INCLUDE_DIRS}
-                    ${Boost_INCLUDE_DIRS})
+                    ${Boost_INCLUDE_DIRS}
+                    ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/include
+                    )
 
+add_subdirectory( ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib)
+
+list(APPEND OBINDEX_LIBS  ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/build/libobindex2.a)
 # Copy test images to the binary directory
 file(GLOB JSON "evaluation/*.json")
 file(COPY ${JSON}
@@ -73,18 +67,20 @@ add_library(lcdetector
             include/ibow-lcd/island.h
             src/lcdetector.cc)
 target_link_libraries(lcdetector
-                      ${catkin_LIBRARIES}
                       ${OpenCV_LIBRARIES}
-                      ${Boost_LIBRARIES})
+                      ${Boost_LIBRARIES}
+                      ${OBINDEX_LIBS}
+                      )
 
 # Main / Demo
 add_executable(demo
                src/main.cc)
 target_link_libraries(demo
                       lcdetector
-                      ${catkin_LIBRARIES}
                       ${OpenCV_LIBRARIES}
-                      ${Boost_LIBRARIES})
+                      ${Boost_LIBRARIES}
+                      ${OBINDEX_LIBS}
+                      )
 
 # Evaluation
 add_executable(evaluator
@@ -92,6 +88,7 @@ add_executable(evaluator
                evaluation/main.cc)
 target_link_libraries(evaluator
                       lcdetector
-                      ${catkin_LIBRARIES}
                       ${OpenCV_LIBRARIES}
-                      ${Boost_LIBRARIES})
+                      ${Boost_LIBRARIES}
+                      ${OBINDEX_LIBS}
+                      )
