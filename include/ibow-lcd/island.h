@@ -34,7 +34,10 @@ struct Island {
         min_img_id(min_img),
         max_img_id(max_img),
         img_id(image_id),
-        score(sc) {}
+        score(sc)
+         {
+           num_votes = 0;
+         }
 
   unsigned size() {
     return max_img_id - min_img_id + 1;
@@ -91,6 +94,7 @@ struct Island {
   unsigned min_img_id;
   unsigned max_img_id;
   unsigned img_id;
+  unsigned num_votes;
   double score;
 };
 
