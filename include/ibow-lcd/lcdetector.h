@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "ibow-lcd/island.h"
+#include "ibow-lcd/geometricconstraints.h"
 #include "obindex2/binary_index.h"
 
 namespace ibow_lcd
@@ -46,6 +47,7 @@ struct LCDetectorParams
                        purge_descriptors(true),
                        min_feat_apps(2),
                        p(250),
+                       alpha(0.5),
                        nndr(0.8f),
                        nndr_bf(0.8f),
                        ep_dist(2.0),
@@ -54,7 +56,8 @@ struct LCDetectorParams
                        island_size(7),
                        min_inliers(22),
                        nframes_after_lc(3),
-                       min_consecutive_loops(5) {}
+                       min_consecutive_loops(5),
+                       debug_loops(false) {}
 
   // Image index params
   unsigned k;                         // Branching factor for the image index
@@ -66,6 +69,7 @@ struct LCDetectorParams
 
   // Loop Closure Params
   unsigned p;                // Previous images to be discarded when searching for a loop
+  float alpha;
   float nndr;                // Nearest neighbour distance ratio
   float nndr_bf;             // NNDR when matching with brute force
   double ep_dist;            // Distance to epipolar lines
@@ -75,7 +79,11 @@ struct LCDetectorParams
   unsigned min_inliers;      // Minimum number of inliers to consider a loop
   unsigned nframes_after_lc; // Number of frames after a lc to wait for new lc
   int min_consecutive_loops; // Min consecutive loops to avoid ep. geometry
-  cv::Mat gt_matrix;
+
+  // Others Params
+  cv::Mat gt_matrix;        // Matrix which store the Image correspondences
+  bool debug_loops;
+
 };
 
 // LCDetectorStatus
@@ -130,6 +138,14 @@ public:
              const cv::Mat &descs_l,
              std::ofstream &out_file);
 
+  void debug(const unsigned image_id,
+             const std::vector<cv::Mat> &v_images,
+             const std::vector<cv::KeyPoint> &kps,
+             const cv::Mat &descs,
+             const std::vector<cv::line_descriptor::KeyLine> &keylines,
+             const cv::Mat &descs_l,
+             std::ofstream &out_file);
+
   cv::Mat DebugProposedIsland(const std::vector<cv::Mat> &v_images,
                               const int &query_idx,
                               const int &curr_idx,
@@ -139,11 +155,13 @@ public:
 private:
   // Parameters
   unsigned p_;
+  float alpha_;
   float nndr_;
   float nndr_bf_;
   double ep_dist_;
   double conf_prob_;
   double min_score_;
+  bool debug_loops_;
   unsigned island_size_;
   unsigned island_offset_;
   unsigned min_inliers_;
@@ -171,6 +189,7 @@ private:
   std::vector<cv::Mat> prev_descs_;
 
   std::vector<std::vector<cv::KeyPoint>> prev_kps_l_;
+  std::vector<std::vector<cv::line_descriptor::KeyLine>> prev_kls_;
   std::vector<cv::Mat> prev_descs_l_;
 
   void addImage(const unsigned image_id,
@@ -182,6 +201,7 @@ private:
                 const cv::Mat &descs,
                 const std::vector<cv::KeyPoint> &kps_l,
                 const cv::Mat &descs_l);
+
   void filterMatches(
       const std::vector<std::vector<cv::DMatch>> &matches_feats,
       std::vector<cv::DMatch> *matches);

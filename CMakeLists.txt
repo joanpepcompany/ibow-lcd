@@ -64,6 +64,8 @@ file(COPY ${JSON}
 ### Targets ###
 # Library
 add_library(lcdetector
+            include/ibow-lcd/geometricconstraints.h
+            src/geometricconstraints.cc
             include/ibow-lcd/island.h
             src/lcdetector.cc)
 target_link_libraries(lcdetector
