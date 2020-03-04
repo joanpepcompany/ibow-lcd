@@ -33,6 +33,26 @@ using namespace cv;
 namespace ibow_lcd
 {
 
+struct GeomParams
+{
+    GeomParams() : b_l_endpts_(false),
+                   b_l_inters_pts_(false),
+                   b_l_global_rot_(false),
+                   b_l_center_pt_(false)
+    {}
+
+    GeomParams(const GeomParams &t) : b_l_endpts_(t.b_l_endpts_),
+                                      b_l_inters_pts_(t.b_l_inters_pts_),
+                                      b_l_global_rot_(t.b_l_global_rot_),
+                                      b_l_center_pt_(t.b_l_center_pt_)
+    {}
+
+    bool b_l_endpts_;
+    bool b_l_inters_pts_;
+    bool b_l_global_rot_;
+    bool b_l_center_pt_;
+};
+
 // Intersect Point From Pair Lines
 struct IntersectPt
 {
@@ -58,7 +78,8 @@ public:
                const std::vector<KeyLine> &t_kls,
                const cv::Mat &q_descs_l,
                const cv::Mat &t_descs_l,
-               const std::vector<cv::DMatch> &matches_l);
+               const std::vector<cv::DMatch> &matches_l,
+               const GeomParams &geom_params);
 
     inline int getLinesInliers()
     {
@@ -138,6 +159,8 @@ private:
     int pts_inliers_;
     int lines_inliers_;
     bool debug_results_;
+
+    GeomParams geom_params_;
 };
 
 } // namespace ibow_lcd

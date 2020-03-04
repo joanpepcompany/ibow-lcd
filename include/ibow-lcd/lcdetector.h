@@ -57,7 +57,14 @@ struct LCDetectorParams
                        min_inliers(22),
                        nframes_after_lc(3),
                        min_consecutive_loops(5),
-                       debug_loops(false) {}
+                       non_sim_candidates(0.5f),
+                       debug_loops(false),
+                       b_l_endpts(false),
+                       b_l_inters_pts(false),
+                       b_l_global_rot(false),
+                       b_l_center_pts(false)
+  {
+  }
 
   // Image index params
   unsigned k;                         // Branching factor for the image index
@@ -79,6 +86,13 @@ struct LCDetectorParams
   unsigned min_inliers;      // Minimum number of inliers to consider a loop
   unsigned nframes_after_lc; // Number of frames after a lc to wait for new lc
   int min_consecutive_loops; // Min consecutive loops to avoid ep. geometry
+  float non_sim_candidates;  // Weight to penalize score from islands which do not appear in Line and pts candidates 
+
+  //Geometric Params
+  bool b_l_endpts;
+  bool b_l_inters_pts;
+  bool b_l_global_rot;
+  bool b_l_center_pts;
 
   // Others Params
   cv::Mat gt_matrix;        // Matrix which store the Image correspondences
@@ -134,14 +148,6 @@ public:
              const std::vector<cv::Mat> &v_images,
              const std::vector<cv::KeyPoint> &kps,
              const cv::Mat &descs,
-             const std::vector<cv::KeyPoint> &kps_l,
-             const cv::Mat &descs_l,
-             std::ofstream &out_file);
-
-  void debug(const unsigned image_id,
-             const std::vector<cv::Mat> &v_images,
-             const std::vector<cv::KeyPoint> &kps,
-             const cv::Mat &descs,
              const std::vector<cv::line_descriptor::KeyLine> &keylines,
              const cv::Mat &descs_l,
              std::ofstream &out_file);
@@ -158,6 +164,7 @@ private:
   float alpha_;
   float nndr_;
   float nndr_bf_;
+  float non_sim_candidates_;
   double ep_dist_;
   double conf_prob_;
   double min_score_;
@@ -166,6 +173,7 @@ private:
   unsigned island_offset_;
   unsigned min_inliers_;
   unsigned nframes_after_lc_;
+  GeomParams geom_params_;
 
   // Last loop closure detected
   LCDetectorResult last_lc_result_;

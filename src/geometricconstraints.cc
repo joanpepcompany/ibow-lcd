@@ -14,8 +14,8 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
                        const std::vector<KeyLine> &t_kls,
                        const cv::Mat &q_descs_l,
                        const cv::Mat &t_descs_l,
-                       const std::vector<cv::DMatch> &matches_l)
-    : q_img_(q_img), t_img_(t_img), img_size_(q_img.size())
+                       const std::vector<cv::DMatch> &matches_l,
+                       const GeomParams &geom_params) : geom_params_(geom_params), q_img_(q_img), t_img_(t_img), img_size_(q_img.size())
 
 {
     bool debug_results_ = false;
@@ -29,9 +29,13 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
         cv::imshow("Initial line matches", init_line_matches);
         // Filter line matches using a global orientation btwn frames
     }
-    std::vector<cv::DMatch> filt_matches, non_filt_matches;
-    // FilterOrientMatches(q_kls, t_kls, matches_l, filt_matches, non_filt_matches);
-    filt_matches = matches_l;
+
+    std::vector<cv::DMatch> line_matches, non_filt_matches;
+    //FIXME: FilterOrientMatches function global orientation doesnt work
+    if(geom_params_.b_l_global_rot_)
+        FilterOrientMatches(q_kls, t_kls, matches_l, line_matches, non_filt_matches);
+    else
+        line_matches = matches_l;
 
     // Compute inliers using intersection Intersection Points, Kpts and Line Endpoints
     //1. IntersectionPts of two lines
@@ -39,25 +43,31 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     std::vector<IntersectPt> v_c_intesect_pt;
 
     std::vector<int> v_matches(q_kls.size(), NULL);
-    for (size_t j = 0; j < filt_matches.size(); j++)
+    for (size_t j = 0; j < line_matches.size(); j++)
     {
-        v_matches.at(filt_matches[j].queryIdx) = filt_matches[j].trainIdx;
+        v_matches.at(line_matches[j].queryIdx) = line_matches[j].trainIdx;
     }
 
-    detAndMatchIntersectPts(q_kls, t_kls,
-                            v_matches,
-                            v_p_intesect_pt, v_c_intesect_pt);
+    std::vector<cv::Point2f> v_p_intersect_kpts;
+    std::vector<cv::Point2f> v_c_intersect_kpts;
+    
+    if (geom_params_.b_l_inters_pts_)
+    {
+        detAndMatchIntersectPts(q_kls, t_kls,
+                                v_matches,
+                                v_p_intesect_pt, v_c_intesect_pt);
 
-    // Convert v_keypoints to v_point2f to be used in fundamental Mat
-    std::vector<cv::Point2f> v_p_intersect_kpts(v_p_intesect_pt.size());
-    for (size_t j = 0; j < v_p_intesect_pt.size(); j++)
-    {
-        v_p_intersect_kpts[j] = v_p_intesect_pt[j].m_pt;
-    }
-    std::vector<cv::Point2f> v_c_intersect_kpts(v_c_intesect_pt.size());
-    for (size_t j = 0; j < v_c_intesect_pt.size(); j++)
-    {
-        v_c_intersect_kpts[j] = v_c_intesect_pt[j].m_pt;
+        // Convert v_keypoints to v_point2f to be used in fundamental Mat
+        v_p_intersect_kpts.resize(v_p_intesect_pt.size());
+        for (size_t j = 0; j < v_p_intesect_pt.size(); j++)
+        {
+            v_p_intersect_kpts[j] = v_p_intesect_pt[j].m_pt;
+        }
+        v_c_intersect_kpts.resize(v_c_intesect_pt.size());
+        for (size_t j = 0; j < v_c_intesect_pt.size(); j++)
+        {
+            v_c_intersect_kpts[j] = v_c_intesect_pt[j].m_pt;
+        }
     }
 
     //2. Kpts
@@ -70,45 +80,51 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
 
     //3. Line EndPoints
     // Get Lines that have not been used before
-    std::vector<int> no_intersect_matches = v_matches;
-    // for (sizdebug_results_t j = 0; j < v_p_intesect_pt.size(); j++)
-    // {
-    // 	no_intersect_matches[v_p_intesect_pt[j].m_idx1] = NULL;
-    // 	no_intersect_matches[v_p_intesect_pt[j].m_idx2] = NULL;
-    // }
-
+    //FIXME: Does it improve the results?
     std::vector<cv::Point2f> v_c_non_intersect_lines;
     std::vector<cv::Point2f> v_p_non_intersect_lines;
-    // Convert Line endopoints to CV::Point2F to include them on findFundamentalMat.
-    // Due to the line orientation can be different between frames the endpoints each line endpoints has been inserted with two diferent orientation (s-s/e-e) and (s-e/e-s)
-
     std::vector<cv::DMatch> v_cand_endpts_matches;
-    for (size_t j = 0; j < no_intersect_matches.size(); j++)
+
+    if (geom_params_.b_l_endpts_)
     {
-        if (no_intersect_matches[j])
+        std::vector<int> no_intersect_matches = v_matches;
+        // for (int j = 0; j < v_p_intesect_pt.size(); j++)
+        // {
+        // 	no_intersect_matches[v_p_intesect_pt[j].m_idx1] = NULL;
+        // 	no_intersect_matches[v_p_intesect_pt[j].m_idx2] = NULL;
+        // }
+
+
+        // Convert Line endopoints to CV::Point2F to include them on findFundamentalMat.
+        // Due to the line orientation can be different between frames the endpoints each line endpoints has been inserted with two diferent orientation (s-s/e-e) and (s-e/e-s)
+        for (size_t j = 0; j < no_intersect_matches.size(); j++)
         {
-            cv::Point2f c_pt_1 = q_kls[j].getStartPoint();
-            cv::Point2f c_pt_2 = q_kls[j].getEndPoint();
+            if (no_intersect_matches[j])
+            {
+                cv::Point2f c_pt_1 = q_kls[j].getStartPoint();
+                cv::Point2f c_pt_2 = q_kls[j].getEndPoint();
 
-            cv::DMatch match;
-            match.queryIdx = j;
-            match.trainIdx = no_intersect_matches[j];
-            v_cand_endpts_matches.push_back(match);
+                cv::DMatch match;
+                match.queryIdx = j;
+                match.trainIdx = no_intersect_matches[j];
+                v_cand_endpts_matches.push_back(match);
 
-            v_c_non_intersect_lines.push_back(c_pt_1);
-            v_c_non_intersect_lines.push_back(c_pt_2);
-            v_c_non_intersect_lines.push_back(c_pt_2);
-            v_c_non_intersect_lines.push_back(c_pt_1);
+                v_c_non_intersect_lines.push_back(c_pt_1);
+                v_c_non_intersect_lines.push_back(c_pt_2);
+                v_c_non_intersect_lines.push_back(c_pt_2);
+                v_c_non_intersect_lines.push_back(c_pt_1);
 
-            cv::Point2f p_pt_1 = t_kls[no_intersect_matches[j]].getStartPoint();
-            cv::Point2f p_pt_2 = t_kls[no_intersect_matches[j]].getEndPoint();
+                cv::Point2f p_pt_1 = t_kls[no_intersect_matches[j]].getStartPoint();
+                cv::Point2f p_pt_2 = t_kls[no_intersect_matches[j]].getEndPoint();
 
-            v_p_non_intersect_lines.push_back(p_pt_1);
-            v_p_non_intersect_lines.push_back(p_pt_2);
-            v_p_non_intersect_lines.push_back(p_pt_2);
-            v_p_non_intersect_lines.push_back(p_pt_1);
+                v_p_non_intersect_lines.push_back(p_pt_1);
+                v_p_non_intersect_lines.push_back(p_pt_2);
+                v_p_non_intersect_lines.push_back(p_pt_2);
+                v_p_non_intersect_lines.push_back(p_pt_1);
+            }
         }
     }
+   
 
     // Combine 1 + 2 + 3 into a vector for FM computation
     // Combine IntersectPt Matching (1) and Ktps matching (2)
@@ -199,7 +215,6 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     int k = 0;
     int idx3 = 0;
 
-    // Extract the surviving (inliers) matches and create a vector of Lines that are not matched
     std::vector<int> match_endpts_lines_int(v_matches.size(), NULL);
 
     for (; it3 != inliers_endpts.end(); it3++)
@@ -226,24 +241,28 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
 
     //Evaluate the number of Line inliers combining line endpoints and intersection points
     int inlier_total_line = 0;
-
     std::vector<int> line_match_after_fm_debug = line_match_after_fm;
-    for (size_t j = 0; j < match_endpts_lines_int.size(); j++)
+    if (geom_params_.b_l_endpts_)
     {
-        if (match_endpts_lines_int[j])
+        for (size_t j = 0; j < match_endpts_lines_int.size(); j++)
         {
-            if (line_match_after_fm[j])
+            if (match_endpts_lines_int[j])
             {
-                line_match_after_fm[j] = NULL;
+                if (line_match_after_fm[j])
+                {
+                    line_match_after_fm[j] = NULL;
+                }
+                inlier_total_line++;
             }
-            inlier_total_line++;
         }
     }
-
-    for (size_t j = 0; j < line_match_after_fm.size(); j++)
+    if (geom_params_.b_l_inters_pts_)
     {
-        if (line_match_after_fm[j])
-            inlier_total_line++;
+        for (size_t j = 0; j < line_match_after_fm.size(); j++)
+        {
+            if (line_match_after_fm[j])
+                inlier_total_line++;
+        }
     }
 
     // Evaluate if some lines non geometrical matched can be inliers using the proximity of the endpoints with the epipolar line. Line endpoints as well as the Fundamental Matrix previously computed are required.
