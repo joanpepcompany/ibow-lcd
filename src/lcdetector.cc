@@ -60,6 +60,26 @@ LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0
   geom_params_.b_l_inters_pts_ = params.b_l_inters_pts;
   geom_params_.b_l_global_rot_ = params.b_l_global_rot;
   geom_params_.b_l_center_pt_ = params.b_l_center_pts;
+  geom_params_.ep_dist_ = params.ep_dist;
+  geom_params_.conf_prob_ = params.conf_prob;
+
+  num_incorrect_match = 0;
+  num_not_found_match = 0;
+
+  
+  boost::filesystem::path wrong_matches_fold = params.output_path + std::string("/WrongMatches");
+  wrong_matches_path_ = params.output_path + std::string("/WrongMatches/");
+  boost::filesystem::remove_all(wrong_matches_fold);
+  
+  boost::filesystem::path not_found_matches_fold = params.output_path + std::string("/NotFoundMatches");
+  not_found_matches_path_ = params.output_path + std::string("/NotFoundMatches/");
+  boost::filesystem::remove_all(not_found_matches_fold);
+
+  if (debug_loops_)
+  {
+    boost::filesystem::create_directory(wrong_matches_fold);
+    boost::filesystem::create_directory(not_found_matches_fold);
+  }
 }
 
 LCDetector::~LCDetector() {}
@@ -355,10 +375,10 @@ void LCDetector::debug(const unsigned image_id,
   unsigned newimg_id = queue_ids_.front();
   queue_ids_.pop();
 
-  // Kps is empty because is not used in the Inv Index
-  std::vector<KeyPoint> kps_empty(prev_descs_l_[newimg_id].rows);
+  // Kls is empty because is not used in the Inv Index
+  std::vector<KeyPoint> kls_empty(prev_descs_l_[newimg_id].rows);
   addImage(newimg_id, prev_kps_[newimg_id], prev_descs_[newimg_id],
-           kps_empty, prev_descs_l_[newimg_id]);
+           kls_empty, prev_descs_l_[newimg_id]);
 
 
   // Searching similar images in the index
@@ -480,7 +500,8 @@ void LCDetector::debug(const unsigned image_id,
   std::vector<cv::Point2f> ttrain;
 
   unsigned inliers;
-  if (descs.cols == 0 || prev_descs_[best_img].cols == 0)
+  if ((descs.cols == 0 || prev_descs_[best_img].cols == 0) &&
+          descs_l.cols == 0 ||  prev_descs_l_[best_img].cols == 0)
     inliers = 0;
 
   else
@@ -488,53 +509,59 @@ void LCDetector::debug(const unsigned image_id,
     ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
     ratioMatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
 
-    if (geom_params_.b_l_center_pt_)
-    {
-      std::vector<KeyPoint> q_kps_l(descs_l.rows);
-      for (size_t j = 0; j < kls.size(); j++)
-      {
-        q_kps_l.at(j).pt = kls.at(j).pt;
-      }
+    std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
 
-      std::vector<KeyPoint> t_kps_l(prev_descs_l_[best_img].rows);
-      for (size_t j = 0; j < prev_kls_[best_img].size(); j++)
-      {
-        t_kps_l.at(j).pt = prev_kls_[best_img].at(j).pt;
-      }
-      convertPoints(kps, prev_kps_[best_img], tmatches, q_kps_l, t_kps_l, tmatches_l, &tquery, &ttrain);
+    int pts_inliers = geomConstraints->getPtsInliers();
+    int line_inliers = geomConstraints->getLinesInliers();
 
-      inliers = checkEpipolarGeometry(tquery, ttrain);
-    }
-
-    else
-    {
-      std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
-
-      int pts_inliers = geomConstraints->getPtsInliers();
-      int line_inliers = geomConstraints->getLinesInliers();
-
-      // std::cerr << "pts_inliers : " << pts_inliers << std::endl;
-      // std::cerr << "line_inliers : " << line_inliers << std::endl;
-
-      //FIXME: Save pts inliers and line inliers for pts and lines separately to plot on Matlab? 
-      inliers = pts_inliers + line_inliers;
-    }
+    //FIXME: Save pts inliers and line inliers for pts and lines separately to plot on Matlab?
+    inliers = pts_inliers + line_inliers;
+    // }
   }
 
   bool b_wait = false;
 
   int display_time = 0;
-  if (inliers > 10 && debug_loops_)
+  if (inliers > min_inliers_ && debug_loops_)
   {
-    cv::Mat debug_img = DebugProposedIsland(v_images, image_id, best_img, inliers, display_time);
+    cv::Mat debug_img;
+    if (! DebugProposedIslandWithMatches(v_images, image_id, best_img,
+                          inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, display_time, debug_img))
+    {
+      std::string idx = std::to_string(num_incorrect_match);
+      imwrite(wrong_matches_path_ + idx + ".png", debug_img);
+      num_incorrect_match++;
+    }
 
     cv::imshow("LC Results", debug_img);
   }
-  
+
+  if(inliers > min_inliers_)
+  {
+    output_mat_.at<uchar>(image_id, best_img) = 1;
+  }
+
+  if (inliers < min_inliers_ && debug_loops_)
+  {
+    cv::Mat gt_row = gt_matrix_.row(image_id);
+    double min, max;
+    cv::minMaxLoc(gt_row, &min, &max);
+    if (max > 0)
+    {
+      cv::Mat debug_img;
+      int displ_time;
+      DebugProposedIslandWithMatches(v_images, image_id, best_img,
+                          inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, displ_time, debug_img);
+      std::string idx = std::to_string(num_not_found_match);
+      imwrite(not_found_matches_path_ + idx + ".png", debug_img);
+      num_not_found_match++;
+    }
+  }
+
   if (b_wait)
   cv::waitKey(0);
   else if( display_time != 0)
-  cv::waitKey(display_time);
+  cv::waitKey(10);
 
   auto end = std::chrono::steady_clock::now();
   auto diff = end - start;
@@ -844,12 +871,14 @@ void LCDetector::convertPoints(const std::vector<cv::KeyPoint> &query_kps,
   }
 }
 
-cv::Mat LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
+bool LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
                                         const int &query_idx,
                                         const int &train_idx,
                                         const int &score,
-                                        int &display_time)
+                                        int &display_time,
+                                        cv::Mat &concat)
 {
+  bool correct = false;
   //Copy and write the image ID
   cv::Mat query = v_images[query_idx].clone();
   putText(query, std::to_string(query_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
@@ -859,7 +888,6 @@ cv::Mat LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
   putText(train, std::to_string(train_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
 
   // Join the two images in one
-  cv::Mat concat;
   cv::Mat black_cols = cv::Mat::zeros(query.rows, 10, CV_8UC3);
   cv::hconcat(query, black_cols, query);
   cv::hconcat(query, train, concat);
@@ -874,18 +902,19 @@ cv::Mat LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
   {
     if (gt_matrix_.at<uchar>(query_idx, train_idx) == 1)
     {
+      correct = true;
       putText(concat, "Correct Loop ", cv::Point(concat.cols / 2, concat.rows - 10), 1, 1, cv::Scalar(0, 255, 0), 2, 0);
       display_time = 300;
     }
     else
     {
       bool loop_found = false;
-      for (size_t i = 0; i < 5; i++)
+      for (size_t i = 0; i < 20; i++)
       {
         if (loop_found)
           break;
 
-        for (size_t j = 0; j < 5; j++)
+        for (size_t j = 0; j < 20; j++)
         {
           if ((gt_matrix_.at<uchar>(query_idx + i, train_idx + j) == 1) ||
               (gt_matrix_.at<uchar>(query_idx - i, train_idx - j) == 1) || (gt_matrix_.at<uchar>(query_idx + i, train_idx - j) == 1) ||
@@ -897,8 +926,9 @@ cv::Mat LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
 
       if (loop_found)
       {
-        putText(concat, "Correct Loop ", cv::Point(concat.cols / 2, concat.rows - 10), 1, 1, cv::Scalar(32, 114, 243), 2, 0);
+        putText(concat, "Lower than 20 Frames to be a Correct Loop ", cv::Point(concat.cols / 2, concat.rows - 10), 1, 1, cv::Scalar(32, 114, 243), 2, 0);
         display_time = 300;
+        correct = true;
       }
 
       else
@@ -914,7 +944,230 @@ cv::Mat LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
     putText(concat, "Loop Detected. No GT Available ", cv::Point(concat.cols / 2, concat.rows - 10), 1, 1, cv::Scalar(32, 114, 243), 2, 0);
     display_time = 800;
   }
-  return concat;
+  return correct;
+}
+
+bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_images,
+                                        const int &query_idx,
+                                        const int &train_idx,
+                                        const int &score,
+                                        const std::vector<std::vector<cv::KeyPoint> > &v_kps,
+                                        const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
+                                        const std::vector<DMatch> &v_matches,
+                                        const std::vector<DMatch> &v_matches_l,
+                                        int &display_time,
+                                        cv::Mat &matched_img)
+{
+  bool correct = false;
+  //Copy and write the image ID
+  cv::Mat query = draw2DLines(v_images[query_idx], v_kls[query_idx]);
+  putText(query, std::to_string(query_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
+
+  cv::Mat train = draw2DLines(v_images[train_idx], v_kls[train_idx]);
+
+  putText(train, std::to_string(train_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
+
+  // Join the two images in one
+  // cv::Mat black_cols = cv::Mat::zeros(query.rows, 10, CV_8UC3);
+  // cv::hconcat(query, black_cols, query);
+  // cv::hconcat(query, train, concat);
+  // cv::Mat black_rows = cv::Mat::zeros(30, concat.cols, CV_8UC3);
+  // cv::vconcat(concat, black_rows, concat);
+
+ matched_img = DrawLineNPtsMatches(v_images, query_idx, train_idx, v_kls, v_kps,
+                      v_matches_l, v_matches);
+
+      // Add extra information like if its LC and number of inliers
+      putText(matched_img, "Inliers: " + std::to_string(score), cv::Point(5, matched_img.rows - 10), 1, 1, cv::Scalar(255, 255, 255), 2, 0);
+
+  if (gt_matrix_.rows > 1)
+  {
+    if (gt_matrix_.at<uchar>(query_idx, train_idx) == 1)
+    {
+      correct = true;
+      putText(matched_img, "Correct Loop ", cv::Point(matched_img.cols / 2, matched_img.rows - 10), 1, 1, cv::Scalar(0, 255, 0), 2, 0);
+      display_time = 300;
+    }
+    else
+    {
+      bool loop_found = false;
+      for (size_t i = 0; i < 20; i++)
+      {
+        if (loop_found)
+          break;
+
+        for (size_t j = 0; j < 20; j++)
+        {
+          if ((gt_matrix_.at<uchar>(query_idx + i, train_idx + j) == 1) ||
+              (gt_matrix_.at<uchar>(query_idx - i, train_idx - j) == 1) || (gt_matrix_.at<uchar>(query_idx + i, train_idx - j) == 1) ||
+              (gt_matrix_.at<uchar>(query_idx + i, train_idx - j) == 1))
+
+            loop_found = true;
+        }
+      }
+
+      if (loop_found)
+      {
+        putText(matched_img, "Lower than 20 Frames to be a Correct Loop ", cv::Point(matched_img.cols / 2, matched_img.rows - 10), 1, 1, cv::Scalar(32, 114, 243), 2, 0);
+        display_time = 300;
+        correct = true;
+      }
+
+      else
+      {
+        putText(matched_img, "Incorrect Loop ", cv::Point(matched_img.cols / 2, matched_img.rows - 10), 1, 1, cv::Scalar(0, 0, 255), 2, 0);
+
+        display_time = 2000;
+      }
+    }
+  }
+  else
+  {
+    putText(matched_img, "Loop Detected. No GT Available ", cv::Point(matched_img.cols / 2, matched_img.rows - 10), 1, 1, cv::Scalar(32, 114, 243), 2, 0);
+    display_time = 800;
+  }
+  return correct;
+}
+
+cv::Mat LCDetector::DrawLineNPtsMatches(
+    std::vector<cv::Mat> v_imgs,
+    const int &query_idx,
+    const int &train_idx,
+    const std::vector<std::vector<KeyLine>> &v_kls,
+    const std::vector<std::vector<KeyPoint>> &v_kps,
+    const std::vector<DMatch> &kls_matches,
+    const std::vector<DMatch> &kpts_matches)
+{
+  cv::Mat tr_img = v_imgs[train_idx].clone();
+  cv::Mat q_img = v_imgs[query_idx].clone();
+
+  std::vector<KeyLine> tr_lines = v_kls[train_idx];
+  std::vector<KeyLine> q_lines = v_kls[query_idx];
+
+  std::vector<KeyPoint> tr_kps = v_kps[train_idx];
+  std::vector<KeyPoint> q_kps = v_kps[query_idx];
+
+  unsigned int imageWidth = tr_img.cols;
+  unsigned int imageHeight = tr_img.rows;
+
+  int lineIDLeft;
+  int lineIDRight;
+  int lowest1 = 0, highest1 = 255;
+  int range1 = (highest1 - lowest1) + 1;
+  std::vector<unsigned int> r1l(kls_matches.size()), g1l(kls_matches.size()), b1l(kls_matches.size()); //the color of lines
+
+   std::vector<unsigned int> r1p(kpts_matches.size()), g1p(kpts_matches.size()), b1p(kpts_matches.size()); //the color of lines
+
+  for (unsigned int pair = 0; pair < kls_matches.size(); pair++)
+  {
+    r1l[pair] = lowest1 + int(rand() % range1);
+    g1l[pair] = lowest1 + int(rand() % range1);
+    b1l[pair] = 255 - r1l[pair];
+
+    if (kls_matches[pair].trainIdx < 0 || kls_matches[pair].queryIdx < 0)
+      continue;
+
+    lineIDLeft = kls_matches[pair].trainIdx;
+    lineIDRight = kls_matches[pair].queryIdx;
+
+    cv::Point startPointL = cv::Point(int(tr_lines[lineIDLeft].startPointX), int(tr_lines[lineIDLeft].startPointY));
+    cv::Point endPointL = cv::Point(int(tr_lines[lineIDLeft].endPointX), int(tr_lines[lineIDLeft].endPointY));
+    cv::line(tr_img, startPointL, endPointL, CV_RGB(r1l[pair], g1l[pair], b1l[pair]), 4, cv::LINE_AA, 0);
+
+    cv::Point startPointR = cvPoint(int(q_lines[lineIDRight].startPointX), int(q_lines[lineIDRight].startPointY));
+
+    cv::Point endPointR = cvPoint(int(q_lines[lineIDRight].endPointX), int(q_lines[lineIDRight].endPointY));
+
+    cv::line(q_img, startPointR, endPointR, CV_RGB(r1l[pair], g1l[pair], b1l[pair]), 4, cv::LINE_AA, 0);
+  }
+
+  for (unsigned int pair = 0; pair < kpts_matches.size(); pair++)
+  {
+    r1p[pair] = lowest1 + int(rand() % range1);
+    g1p[pair] = lowest1 + int(rand() % range1);
+    b1p[pair] = 255 - r1p[pair];
+
+    if (kpts_matches[pair].trainIdx < 0 || kpts_matches[pair].queryIdx < 0)
+      continue;
+
+    lineIDLeft = kpts_matches[pair].trainIdx;
+    lineIDRight = kpts_matches[pair].queryIdx;
+  
+    cv::circle(tr_img,tr_kps[lineIDLeft].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]),2);
+
+    cv::circle(q_img,q_kps[lineIDRight].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]),2);
+  }
+
+  cv::Mat cvResultColorImage1 = cv::Mat(cv::Size(imageWidth * 2, imageHeight),
+                                        tr_img.type(), 3);
+  cv::Mat cvResultColorImage2 = cv::Mat(cv::Size(imageWidth * 2, imageHeight),
+                                        tr_img.type(), 3);
+  cv::Mat cvResultColorImage = cv::Mat(cv::Size(imageWidth * 2, imageHeight),
+                                       tr_img.type(), 3);
+  cv::Mat roi = cvResultColorImage1(cv::Rect(0, 0, imageWidth, imageHeight));
+  cv::resize(tr_img, roi, roi.size(), 0, 0, 0);
+
+  cv::Mat roi2 = cvResultColorImage1(cv::Rect(imageWidth, 0, imageWidth,
+                                              imageHeight));
+  cv::resize(q_img, roi2, roi2.size(), 0, 0, 0);
+  cvResultColorImage1.copyTo(cvResultColorImage2);
+
+  for (unsigned int pair = 0; pair < kls_matches.size(); pair++)
+  {
+    if (kls_matches[pair].trainIdx < 0 || kls_matches[pair].queryIdx < 0)
+      continue;
+    lineIDLeft = kls_matches[pair].trainIdx;
+    lineIDRight = kls_matches[pair].queryIdx;
+    cv::Point startPoint = cv::Point(int(tr_lines[lineIDLeft].startPointX), int(tr_lines[lineIDLeft].startPointY));
+    cv::Point endPoint = cv::Point(int(q_lines[lineIDRight].startPointX +
+                                       imageWidth),
+                                   int(q_lines[lineIDRight].startPointY));
+    cv::line(cvResultColorImage2, startPoint, endPoint, CV_RGB(r1l[pair], g1l[pair], b1l[pair]), 1, cv::LINE_AA, 0);
+  }
+
+  for (unsigned int pair = 0; pair < kpts_matches.size(); pair++)
+  {
+    if (kpts_matches[pair].trainIdx < 0 || kpts_matches[pair].queryIdx < 0)
+      continue;
+    lineIDLeft = kpts_matches[pair].trainIdx;
+    lineIDRight = kpts_matches[pair].queryIdx;
+    cv::Point startPoint = tr_kps[lineIDLeft].pt;
+    cv::Point endPoint = cv::Point(q_kps[lineIDRight].pt.x + imageWidth, q_kps[lineIDRight].pt.y);
+    cv::line(cvResultColorImage2, startPoint, endPoint, CV_RGB(r1l[pair], g1l[pair], b1l[pair]), 1, cv::LINE_AA, 0);
+  }
+  cv::addWeighted(cvResultColorImage1, 0.5, cvResultColorImage2, 0.5, 0.0,
+                  cvResultColorImage, -1);
+
+  float scale = 1.4;
+  cv::resize(cvResultColorImage, cvResultColorImage, cv::Size(2 * imageWidth * scale, imageHeight * scale));
+
+  return cvResultColorImage;
+}
+
+cv::Mat LCDetector::draw2DLines(const cv::Mat gray_img,
+                                const std::vector<KeyLine> &keylines)
+{
+    cv::Mat line_img;
+    if (gray_img.type() == CV_8UC1)
+    {
+        cvtColor(gray_img, line_img, CV_GRAY2RGB);
+    }
+    else
+        line_img = gray_img;
+
+    for (size_t i = 0; i < keylines.size(); i++)
+    {
+        /* get a random color */
+       
+        // /* get ends of a line */
+        cv::Point pt1 = cv::Point(int(keylines[i].startPointX), int(keylines[i].startPointY));
+        cv::Point pt2 = cv::Point(int(keylines[i].endPointX), int(keylines[i].endPointY));
+
+        /* draw line */
+        line(line_img, pt1, pt2, cv::Scalar(0, 0, 255), 2);
+    }
+
+    return line_img;
 }
 
 } // namespace ibow_lcd

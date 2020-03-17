@@ -29,6 +29,7 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <boost/filesystem.hpp>
 
 #include "ibow-lcd/island.h"
 #include "ibow-lcd/geometricconstraints.h"
@@ -62,10 +63,12 @@ struct LCDetectorParams
                        b_l_endpts(false),
                        b_l_inters_pts(false),
                        b_l_global_rot(false),
-                       b_l_center_pts(false)
+                       b_l_center_pts(false),
+                       detect_grad_th(50)
   {
   }
 
+  int detect_grad_th;
   // Image index params
   unsigned k;                         // Branching factor for the image index
   unsigned s;                         // Maximum leaf size for the image index
@@ -98,6 +101,7 @@ struct LCDetectorParams
   cv::Mat gt_matrix;        // Matrix which store the Image correspondences
   bool debug_loops;
 
+  std::string output_path;
 };
 
 // LCDetectorStatus
@@ -152,13 +156,50 @@ public:
              const cv::Mat &descs_l,
              std::ofstream &out_file);
 
-  cv::Mat DebugProposedIsland(const std::vector<cv::Mat> &v_images,
+  bool DebugProposedIsland(const std::vector<cv::Mat> &v_images,
                               const int &query_idx,
                               const int &curr_idx,
                               const int &score,
-                              int &display_time);
+                              int &display_time,
+                              cv::Mat &concat);
+
+  bool DebugProposedIslandWithMatches(
+      const std::vector<cv::Mat> &v_images,
+      const int &query_idx,
+      const int &train_idx,
+      const int &score,
+      const std::vector<std::vector<cv::KeyPoint>> &v_kps,
+      const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
+      const std::vector<DMatch> &v_matches,
+      const std::vector<DMatch> &v_matches_l,
+      int &display_time,
+      cv::Mat &matched_img);
+
+cv::Mat DrawLineNPtsMatches(
+    std::vector<cv::Mat> v_imgs,
+    const int &query_idx,
+    const int &train_idx,
+    const std::vector<std::vector<KeyLine>> &v_kls,
+    const std::vector<std::vector<KeyPoint>> &v_kps,
+    const std::vector<DMatch> &kls_matches,
+    const std::vector<DMatch> &kpts_matches);
+
+  cv::Mat draw2DLines(const cv::Mat gray_img,
+                                const std::vector<KeyLine> &keylines);
+
+  void setOutPMatSize(const int &size)
+  {
+    output_mat_ = cv::Mat::zeros(cv::Size(size, size), CV_8U);
+  }
+
+  cv::Mat getOutPMat()
+  {
+    return output_mat_;
+  }
 
 private:
+
+  cv::Mat output_mat_;
   // Parameters
   unsigned p_;
   float alpha_;
@@ -175,6 +216,9 @@ private:
   unsigned nframes_after_lc_;
   GeomParams geom_params_;
 
+  int num_incorrect_match;
+  int num_not_found_match;
+
   // Last loop closure detected
   LCDetectorResult last_lc_result_;
   Island last_lc_island_;
@@ -183,6 +227,9 @@ private:
 
   // Ground Truth Matrix
   cv::Mat gt_matrix_;
+
+  std::string wrong_matches_path_; 
+  std::string not_found_matches_path_;
 
   // Image Index
   std::shared_ptr<obindex2::ImageIndex> index_;
@@ -242,6 +289,7 @@ private:
                      const std::vector<cv::DMatch> &matches_l,
                      std::vector<cv::Point2f> *query,
                      std::vector<cv::Point2f> *train);
+
 };
 
 } // namespace ibow_lcd

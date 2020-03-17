@@ -18,43 +18,37 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
                        const GeomParams &geom_params) : geom_params_(geom_params), q_img_(q_img), t_img_(t_img), img_size_(q_img.size())
 
 {
-    bool debug_results_ = false;
-    if (debug_results_)
-    {
-        cv::Mat init_line_matches = DrawMatches(t_kls, q_kls, t_img, q_img, matches_l);
-        cv::Mat pts_matching;
-        cv::drawMatches(q_img, q_kps, t_img, t_kps, matches_pts, pts_matching);
-        cv::imshow("Pts image", pts_matching);
-
-        cv::imshow("Initial line matches", init_line_matches);
-        // Filter line matches using a global orientation btwn frames
-    }
-
-    std::vector<cv::DMatch> line_matches, non_filt_matches;
     //FIXME: FilterOrientMatches function global orientation doesnt work
-    if(geom_params_.b_l_global_rot_)
-        FilterOrientMatches(q_kls, t_kls, matches_l, line_matches, non_filt_matches);
-    else
-        line_matches = matches_l;
+    // std::vector<cv::DMatch> line_matches, non_filt_matches;
+    // if(geom_params_.b_l_global_rot_)
+    //     FilterOrientMatches(q_kls, t_kls, matches_l, line_matches, non_filt_matches);
+    // else
+    //     line_matches = matches_l;
 
-    // Compute inliers using intersection Intersection Points, Kpts and Line Endpoints
+
+
+    //Change the format for faster evaluation of matched lines
+    std::vector<int> matches_l_int(q_kls.size(), NULL);
+    for (size_t j = 0; j < matches_l.size(); j++)
+    {
+        matches_l_int.at(matches_l[j].queryIdx) = matches_l[j].trainIdx;
+    }
+    // Compute inliers using: Line Intersection Points, Kpts, Line Endpoints and Center Line Pts
+    
     //1. IntersectionPts of two lines
+
+    std::vector<cv::Point2f> v_p_intersect_kpts(0);
+    std::vector<cv::Point2f> v_c_intersect_kpts(0);
     std::vector<IntersectPt> v_p_intesect_pt;
     std::vector<IntersectPt> v_c_intesect_pt;
 
-    std::vector<int> v_matches(q_kls.size(), NULL);
-    for (size_t j = 0; j < line_matches.size(); j++)
-    {
-        v_matches.at(line_matches[j].queryIdx) = line_matches[j].trainIdx;
-    }
-
-    std::vector<cv::Point2f> v_p_intersect_kpts;
-    std::vector<cv::Point2f> v_c_intersect_kpts;
-    
+    //Compute Intersect Points
     if (geom_params_.b_l_inters_pts_)
     {
+      
+
         detAndMatchIntersectPts(q_kls, t_kls,
-                                v_matches,
+                                matches_l_int,
                                 v_p_intesect_pt, v_c_intesect_pt);
 
         // Convert v_keypoints to v_point2f to be used in fundamental Mat
@@ -70,61 +64,74 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
         }
     }
 
-    //2. Kpts
-    // Match Keypoints between frames
-
+    //2. Kpts    
     // Convert v_KeyPoint to v_Point2f to be used in fundamental Mat
-    std::vector<cv::Point2f> v_c_kpts;
-    std::vector<cv::Point2f> v_p_kpts;
+    std::vector<cv::Point2f> v_c_kpts(0);
+    std::vector<cv::Point2f> v_p_kpts(0);
     convertPoints(q_kps, t_kps, matches_pts, &v_c_kpts, &v_p_kpts);
 
     //3. Line EndPoints
-    // Get Lines that have not been used before
-    //FIXME: Does it improve the results?
-    std::vector<cv::Point2f> v_c_non_intersect_lines;
-    std::vector<cv::Point2f> v_p_non_intersect_lines;
-    std::vector<cv::DMatch> v_cand_endpts_matches;
+    std::vector<cv::Point2f> v_c_endpts_lines(0);
+    std::vector<cv::Point2f> v_p_endpts_lines(0);
+    std::vector<cv::DMatch> v_cand_endpts_matches(0);
 
     if (geom_params_.b_l_endpts_)
     {
-        std::vector<int> no_intersect_matches = v_matches;
-        // for (int j = 0; j < v_p_intesect_pt.size(); j++)
-        // {
-        // 	no_intersect_matches[v_p_intesect_pt[j].m_idx1] = NULL;
-        // 	no_intersect_matches[v_p_intesect_pt[j].m_idx2] = NULL;
-        // }
-
-
         // Convert Line endopoints to CV::Point2F to include them on findFundamentalMat.
         // Due to the line orientation can be different between frames the endpoints each line endpoints has been inserted with two diferent orientation (s-s/e-e) and (s-e/e-s)
-        for (size_t j = 0; j < no_intersect_matches.size(); j++)
+        for (size_t j = 0; j < matches_l_int.size(); j++)
         {
-            if (no_intersect_matches[j])
+            if (matches_l_int[j])
             {
                 cv::Point2f c_pt_1 = q_kls[j].getStartPoint();
                 cv::Point2f c_pt_2 = q_kls[j].getEndPoint();
-
+                // FIXME: v_cand_endpts_matches es el mismo que matches_l
                 cv::DMatch match;
                 match.queryIdx = j;
-                match.trainIdx = no_intersect_matches[j];
+                match.trainIdx = matches_l_int[j];
                 v_cand_endpts_matches.push_back(match);
 
-                v_c_non_intersect_lines.push_back(c_pt_1);
-                v_c_non_intersect_lines.push_back(c_pt_2);
-                v_c_non_intersect_lines.push_back(c_pt_2);
-                v_c_non_intersect_lines.push_back(c_pt_1);
+                v_c_endpts_lines.push_back(c_pt_1);
+                v_c_endpts_lines.push_back(c_pt_2);
+                v_c_endpts_lines.push_back(c_pt_2);
+                v_c_endpts_lines.push_back(c_pt_1);
 
-                cv::Point2f p_pt_1 = t_kls[no_intersect_matches[j]].getStartPoint();
-                cv::Point2f p_pt_2 = t_kls[no_intersect_matches[j]].getEndPoint();
+                cv::Point2f p_pt_1 = t_kls[matches_l_int[j]].getStartPoint();
+                cv::Point2f p_pt_2 = t_kls[matches_l_int[j]].getEndPoint();
 
-                v_p_non_intersect_lines.push_back(p_pt_1);
-                v_p_non_intersect_lines.push_back(p_pt_2);
-                v_p_non_intersect_lines.push_back(p_pt_2);
-                v_p_non_intersect_lines.push_back(p_pt_1);
+                v_p_endpts_lines.push_back(p_pt_1);
+                v_p_endpts_lines.push_back(p_pt_2);
+                v_p_endpts_lines.push_back(p_pt_2);
+                v_p_endpts_lines.push_back(p_pt_1);
             }
         }
     }
-   
+
+    // 4 Center Pts
+    std::vector<cv::DMatch> v_ctrpts_matches(0);
+    std::vector<cv::Point2f> v_c_ctrpts_lines(0);
+    std::vector<cv::Point2f> v_p_ctrpts_lines(0);
+
+    if (geom_params_.b_l_center_pt_)
+    {  
+        for (size_t j = 0; j < matches_l_int.size(); j++)
+        {
+            if (matches_l_int[j])
+            {   
+                // FIXME: v_ctrpts_matches es el mismo que matches_l
+                cv::DMatch match;
+                match.queryIdx = j;
+                match.trainIdx = matches_l_int[j];
+                v_ctrpts_matches.push_back(match);
+
+                cv::Point2f c_pt_1 = q_kls[j].pt;
+                v_c_ctrpts_lines.push_back(c_pt_1);
+
+                cv::Point2f p_pt_1 = t_kls[matches_l_int[j]].pt;
+                v_p_ctrpts_lines.push_back(p_pt_1);
+            }
+        }
+    }
 
     // Combine 1 + 2 + 3 into a vector for FM computation
     // Combine IntersectPt Matching (1) and Ktps matching (2)
@@ -137,54 +144,58 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     // Add endpoints lines (3)
     int size_int_pts_and_kpts = v_c_combined_pts.size();
 
-    v_p_combined_pts.insert(v_p_combined_pts.end(), v_p_non_intersect_lines.begin(), v_p_non_intersect_lines.end());
+    v_p_combined_pts.insert(v_p_combined_pts.end(), v_p_endpts_lines.begin(), v_p_endpts_lines.end());
 
-    v_c_combined_pts.insert(v_c_combined_pts.end(), v_c_non_intersect_lines.begin(), v_c_non_intersect_lines.end());
+    v_c_combined_pts.insert(v_c_combined_pts.end(), v_c_endpts_lines.begin(), v_c_endpts_lines.end());
+
+    // Add Center Pts lines (4)
+    //FIXME: Add center pts
+    int size_intpts_kpts_ctrpts = v_c_combined_pts.size();
+    v_p_combined_pts.insert(v_p_combined_pts.end(), v_p_ctrpts_lines.begin(), v_p_ctrpts_lines.end());
+
+    v_c_combined_pts.insert(v_c_combined_pts.end(), v_c_ctrpts_lines.begin(), v_c_ctrpts_lines.end());
 
     // Compute FM with intersection Points and Keypoints
-    double ep_dist = 1.0;
-    double conf_prob = 0.99;
+    
     std::vector<uchar> inliers_pts(v_c_combined_pts.size(), 0);
 
     cv::Mat FM = cv::findFundamentalMat(
         cv::Mat(v_c_combined_pts),
         cv::Mat(v_p_combined_pts), // Matching points
         CV_FM_RANSAC,              // RANSAC method
-        ep_dist,                   // Distance to epipolar line
-        conf_prob,                 // Confidence probability
+        geom_params_.ep_dist_,                   // Distance to epipolar line
+        geom_params_.conf_prob_,                 // Confidence probability
         inliers_pts);              // Match status (inlier or outlier)
 
     //Split the inliers vector in IntersectionPts, Kpts and Endpoints
     //1. IntersectionPts of two lines
+
+    // Intersection Pts FM results evaluation
     std::vector<uchar> inliers_intersect_pts(inliers_pts.begin(), inliers_pts.begin() + v_p_intersect_kpts.size());
 
     int inters_inl_wout_dupl = 0;
-    std::vector<int> line_match_aft_fm = v_matches;
-    std::vector<int> line_match_after_fm(v_matches.size(), NULL);
+    std::vector<int> inl_interspts_matches(matches_l_int.size(), NULL);
     int intersect_inliers = 0;
 
     int idx_1 = 0;
     auto it1 = inliers_intersect_pts.begin();
-
-    std::cerr << "v_p_intersect_kpts.size() : " << v_p_intersect_kpts.size() << std::endl;
+    //FIXME: Evaluate if there is another way to solve it
     for (; it1 != inliers_intersect_pts.end(); it1++)
     {
         if (*it1)
         {
-            if (!line_match_after_fm[v_c_intesect_pt[idx_1].m_idx1])
+            // If the matching has not been registered yet
+            if (!inl_interspts_matches[v_c_intesect_pt[idx_1].m_idx1])
             {
-
                 inters_inl_wout_dupl++;
-                line_match_after_fm[v_c_intesect_pt[idx_1].m_idx1] = line_match_aft_fm[v_c_intesect_pt[idx_1].m_idx1];
+                inl_interspts_matches[v_c_intesect_pt[idx_1].m_idx1] = matches_l_int[v_c_intesect_pt[idx_1].m_idx1];
 
-                line_match_aft_fm[v_c_intesect_pt[idx_1].m_idx1] = NULL;
             }
-            if (!line_match_after_fm[v_c_intesect_pt[idx_1].m_idx2])
+            if (!inl_interspts_matches[v_c_intesect_pt[idx_1].m_idx2])
             {
 
                 inters_inl_wout_dupl++;
-                line_match_after_fm[v_c_intesect_pt[idx_1].m_idx2] = line_match_aft_fm[v_c_intesect_pt[idx_1].m_idx2];
-                line_match_aft_fm[v_c_intesect_pt[idx_1].m_idx2] = NULL;
+                inl_interspts_matches[v_c_intesect_pt[idx_1].m_idx2] = matches_l_int[v_c_intesect_pt[idx_1].m_idx2];
             }
             intersect_inliers++;
         }
@@ -206,7 +217,7 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     }
 
     //3. Endpoints of lines
-    std::vector<uchar> inliers_endpts(inliers_pts.begin() + size_int_pts_and_kpts, inliers_pts.end());
+    std::vector<uchar> inliers_endpts(inliers_pts.begin() + size_int_pts_and_kpts, inliers_pts.begin() + size_intpts_kpts_ctrpts);
 
     auto it3 = inliers_endpts.begin();
     bool inlier_endp_found = false;
@@ -215,8 +226,7 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     int k = 0;
     int idx3 = 0;
 
-    std::vector<int> match_endpts_lines_int(v_matches.size(), NULL);
-
+    std::vector<int> inl_endpts_matches(matches_l_int.size(), NULL);
     for (; it3 != inliers_endpts.end(); it3++)
     {
         if (*it3)
@@ -229,7 +239,7 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
         {
             if (inlier_endp_found)
             {
-                match_endpts_lines_int[v_cand_endpts_matches[k].queryIdx] = v_cand_endpts_matches[k].trainIdx;
+                inl_endpts_matches[v_cand_endpts_matches[k].queryIdx] = v_cand_endpts_matches[k].trainIdx;
 
                 line_endpoints_inliers++;
                 inlier_endp_found = false;
@@ -239,101 +249,98 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
         idx3++;
     }
 
-    //Evaluate the number of Line inliers combining line endpoints and intersection points
-    int inlier_total_line = 0;
-    std::vector<int> line_match_after_fm_debug = line_match_after_fm;
-    if (geom_params_.b_l_endpts_)
-    {
-        for (size_t j = 0; j < match_endpts_lines_int.size(); j++)
-        {
-            if (match_endpts_lines_int[j])
-            {
-                if (line_match_after_fm[j])
-                {
-                    line_match_after_fm[j] = NULL;
-                }
-                inlier_total_line++;
-            }
-        }
-    }
-    if (geom_params_.b_l_inters_pts_)
-    {
-        for (size_t j = 0; j < line_match_after_fm.size(); j++)
-        {
-            if (line_match_after_fm[j])
-                inlier_total_line++;
-        }
-    }
+     //4. Center Points of lines
+      std::vector<uchar> inliers_centerpts(inliers_pts.begin() + size_intpts_kpts_ctrpts, inliers_pts.end());
+      int ctrpts_inliers = 0;
 
-    // Evaluate if some lines non geometrical matched can be inliers using the proximity of the endpoints with the epipolar line. Line endpoints as well as the Fundamental Matrix previously computed are required.
-    // std::vector<cv::DMatch> v_ctr_matches;
-    // std::vector<cv::DMatch> v_ctr_non_matches;
-    // std::vector<uchar> inliers_endpoints(line_match_aft_fm.size(), 0);
+      std::vector<int> inl_ctrpts_matches(matches_l_int.size(), NULL);
 
-    // lFm->line_endpts_epip_geom_const(line_match_aft_fm, v_keylines.back(), v_keylines[v_keylines.size() - 2], FM, cam_matrix, inliers_endpoints, v_ctr_matches, v_ctr_non_matches);
+      auto it4 = inliers_centerpts.begin();
+      int idx4 = 0;
+      for (; it4 != inliers_centerpts.end(); it4++)
+      {
+          if(*it4)
+          {
+              inl_ctrpts_matches[matches_l[idx4].queryIdx] = matches_l[idx4].trainIdx;
+              ctrpts_inliers ++;
+          }
+          idx4++;
+      }
 
-    std::cerr << "*** Inliers resume ***" << std::endl;
-    std::cerr << " - Amount of lines (Img1 / Img2) : " << t_kps.size() << " / " << q_kps.size() << std::endl;
+      //Evaluate the number of Line inliers combining line endpoints and intersection points
 
-    std::cerr << " - Ktps Inliers : " << kpts_inliers << " of " << v_p_kpts.size() << std::endl;
+      std::vector<int> mult_line_matches(matches_l_int.size(), 0);
+      int num_endpts_inl = 0;
+      if (geom_params_.b_l_endpts_)
+      {
+          for (size_t j = 0; j < inl_endpts_matches.size(); j++)
+          {
+              if (inl_endpts_matches[j])
+              {
+                  mult_line_matches[j] ++;
+                  num_endpts_inl ++;
+              }
+          }
+      }
+      int num_interspts_inl = 0;
 
-    std::cerr << " - Intersection Inliers Points : " << intersect_inliers << " of " << v_c_intersect_kpts.size() << std::endl;
+      if (geom_params_.b_l_inters_pts_)
+      {
+          for (size_t j = 0; j < inl_interspts_matches.size(); j++)
+          {
+              if (inl_interspts_matches[j])
+              {
+                  num_interspts_inl ++;
+                  mult_line_matches[j] += 1;
+              }
+                  
+          }
+      }
 
-    std::cerr << " - Intersection inliers lines without duplicade : " << inters_inl_wout_dupl << std::endl;
+      int num_ctrpts_inl = 0;
+      if(geom_params_.b_l_center_pt_)
+      {
+          for (size_t j = 0; j < inl_ctrpts_matches.size(); j++)
+          {
+              if(inl_ctrpts_matches[j])
+              {
+                  mult_line_matches[j] ++;
+                  num_ctrpts_inl++;
+              }
+                  
+          }
+      }
 
-    std::cerr << "Endpoints inliers using FM : " << endpts_inliers << " of " << v_c_non_intersect_lines.size() << " total pts, which correspond to " << line_endpoints_inliers << " of " << v_c_non_intersect_lines.size() / 4 << " lines" << std::endl;
+      //Evaluate the number of lines matched using the input of multiple methods
+      int total_line_inliers = 0;
+      for (size_t j = 0; j < mult_line_matches.size(); j++)
+      {
+          if (mult_line_matches[j]>0)
+          total_line_inliers++;
+      }
+      
+    //Debug Results
+    //   std::cerr << "*** Inliers resume ***" << std::endl;
+    //   std::cerr << " - Amount of Kpts candidates (Img1 / Img2) : " << t_kps.size() << " / " << q_kps.size() << std::endl;
 
-    // std::cerr << "Endpoints Matches non using FM : " << v_ctr_matches.size() << std::endl;
+    //   std::cerr << " - Amount of Lines candidates (Img1 / Img2) : " << t_kls.size() << " / " << q_kls.size() << std::endl;
 
-    std::cerr << " - Total inliers : " << kpts_inliers + inters_inl_wout_dupl + line_endpoints_inliers << " of " << matches_pts.size() + matches_l.size() << std::endl;
+      
 
-    std::cerr << "Total of lines inliers : " << inlier_total_line << std::endl;
+    //   std::cerr << " -Intersection Pts inliers: " << num_interspts_inl << std::endl;
+    //   std::cerr << " -Endpts Pts inliers: " << num_endpts_inl << std::endl;
+    //   std::cerr << " -Ctr Pts inliers: " << num_ctrpts_inl << std::endl;
 
-    lines_inliers_ = inlier_total_line;
+    //   std::cerr << " - Total line inliers  : " << total_line_inliers << " of "  << matches_l.size()<< std::endl;
+    //   std::cerr << " -Total Ktps Inliers : " << kpts_inliers << " of " << v_p_kpts.size() << std::endl;
+
+    //   std::cerr << "Total inliers =  : " << kpts_inliers + total_line_inliers  << std::endl;
+  
+
+    //   std::cerr << "Total of lines inliers : " << total_line_inliers << std::endl;
+
+    lines_inliers_ = total_line_inliers;
     pts_inliers_ = kpts_inliers;
-
-    //Draw matches of endpoints
-    if (debug_results_)
-    {
-        // cv::imshow("Current Image Line Detection", v_images_with_lines.back());
-        // cv::imshow("Previous Image Line Detection", v_images_with_lines[v_images_with_lines.size() - 2]);
-        // std::unique_ptr<LineManager> lineMangr(std::unique_ptr<LineManager>(new LineManager()));
-
-        // cv::Mat matches_img = lineMangr->DrawMatches(
-        // v_keylines[v_keylines.size() - 2],
-        // v_keylines.back(),
-        // v_imgs[v_imgs.size() - 2],
-        // v_imgs.back(),
-        // v_ctr_matches);
-
-        // cv::Mat non_matches_img = lineMangr->DrawMatches(
-        //     v_keylines[v_keylines.size() - 2],
-        //     v_keylines.back(),
-        //     v_imgs[v_imgs.size() - 2],
-        //     v_imgs.back(), v_ctr_non_matches);
-
-        // cv::imshow("Matched lines using enpoints with FM known previously", matches_img);
-        // cv::imshow("NON-Matched lines using enpoints with FM known previously", non_matches_img);
-
-        cv::Mat match_img_endpots_non_FM_int = DrawMatches(
-            t_kls,
-            q_kls,
-            t_img,
-            q_img, v_cand_endpts_matches);
-
-        imshow("Lines Matches using line endpoints without knowledge of Fundamental Mat", match_img_endpots_non_FM_int);
-
-        cv::Mat matches_inters_img_int = DrawMatches(
-            t_kls,
-            q_kls,
-            t_img_,
-            q_img_,
-            line_match_after_fm_debug);
-
-        cv::imshow("Line Matches using intersection points", matches_inters_img_int);
-
-        cv::waitKey();
-    }
 }
 
 void GeomConstr::FilterOrientMatches(const std::vector<KeyLine> q_lines,
@@ -344,8 +351,8 @@ void GeomConstr::FilterOrientMatches(const std::vector<KeyLine> q_lines,
 {
     //Compute line orientation change between pair lines of the two frames
     double global_angle = GlobalRotationImagePair(q_lines, tr_lines);
-    std::cerr << "global_angle : " << global_angle << std::endl
-              << std::endl;
+    // std::cerr << "global_angle : " << global_angle << std::endl
+            //   << std::endl;
 
     for (size_t i = 0; i < matches.size(); i++)
     {
@@ -556,7 +563,8 @@ void GeomConstr::detAndMatchIntersectPts(
                              q_kls, t_kls,
                              v_c_intersect_pts, v_p_intersect_pts,
                              v_c_inters_match_pt, v_p_inters_match_pt);
-
+    
+    debug_results_ = false;
     if (debug_results_)
     {
         // Debug results of Line and intersection point candidates

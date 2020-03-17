@@ -38,19 +38,26 @@ struct GeomParams
     GeomParams() : b_l_endpts_(false),
                    b_l_inters_pts_(false),
                    b_l_global_rot_(false),
-                   b_l_center_pt_(false)
+                   b_l_center_pt_(false),
+                   ep_dist_(1.0),
+                   conf_prob_(0.99)
     {}
 
     GeomParams(const GeomParams &t) : b_l_endpts_(t.b_l_endpts_),
                                       b_l_inters_pts_(t.b_l_inters_pts_),
                                       b_l_global_rot_(t.b_l_global_rot_),
-                                      b_l_center_pt_(t.b_l_center_pt_)
+                                      b_l_center_pt_(t.b_l_center_pt_),
+                                      ep_dist_(t.ep_dist_),
+                                      conf_prob_(t.conf_prob_)
     {}
 
     bool b_l_endpts_;
     bool b_l_inters_pts_;
     bool b_l_global_rot_;
     bool b_l_center_pt_;
+    double ep_dist_;
+    double conf_prob_;
+
 };
 
 // Intersect Point From Pair Lines
@@ -80,6 +87,12 @@ public:
                const cv::Mat &t_descs_l,
                const std::vector<cv::DMatch> &matches_l,
                const GeomParams &geom_params);
+
+     cv::Mat DrawMatches(const std::vector<KeyLine> &tr_lines,
+                        const std::vector<KeyLine> &q_lines,
+                        const cv::Mat &train_img,
+                        const cv::Mat &query_img,
+                        const std::vector<DMatch> &matchResult);
 
     inline int getLinesInliers()
     {
@@ -140,11 +153,7 @@ private:
                         const std::vector<KeyLine> &keylines,
                         std::string img_name);
 
-    cv::Mat DrawMatches(const std::vector<KeyLine> &tr_lines,
-                        const std::vector<KeyLine> &q_lines,
-                        const cv::Mat &train_img,
-                        const cv::Mat &query_img,
-                        const std::vector<DMatch> &matchResult);
+   
 
     cv::Mat DrawMatches(const std::vector<KeyLine> &tr_lines,
                         const std::vector<KeyLine> &q_lines,
