@@ -401,6 +401,52 @@ void LCDetector::debug(const unsigned image_id,
   index_->searchImages(descs, matches, &image_matches, true);
   index_l_->searchImages(descs_l, matches_l, &image_matches_l, true);
 
+  // std::cerr << "image_matches[0].score : "   << image_matches[0].score <<   "image_matches_l[0].score : " <<  image_matches_l[0].score << std::endl;
+
+  float non_sim_candidates_p = 1, non_sim_candidates_l = 1;
+
+  if (image_matches[0].score == 0 ||  image_matches_l[0].score == 0)
+  {
+    if(image_matches[0].score == 0)
+    {
+      non_sim_candidates_p = 0;
+      non_sim_candidates_l = 1;
+    }
+    else
+    {
+      non_sim_candidates_p = 1;
+      non_sim_candidates_l = 0;
+    }
+    
+  }
+  else if (image_matches[0].score >= image_matches_l[0].score)
+  {
+    non_sim_candidates_p = image_matches_l[0].score / image_matches[0].score;
+    non_sim_candidates_l = 1 - non_sim_candidates_p;
+  }
+
+  else
+  {
+    non_sim_candidates_l = image_matches[0].score / image_matches_l[0].score;
+    non_sim_candidates_p = 1 - non_sim_candidates_l;
+  }
+
+// std::cerr << "non_sim_candidates_p : " << non_sim_candidates_p << "non_sim_candidates_l : " << non_sim_candidates_l << std::endl;
+  if (non_sim_candidates_l <0 || non_sim_candidates_l > 1){
+  std::cerr << "ERROR: Non_sim_candidates_l : " << non_sim_candidates_l << std::endl;
+  std::cerr << " << Press enter to continue" << std::endl;
+  std::cin.get();
+
+  }
+
+  if (non_sim_candidates_p < 0 || non_sim_candidates_p > 1)
+  {
+    std::cerr << "ERROR: Non_sim_candidates_p : " << non_sim_candidates_p << std::endl;
+
+    std::cerr << " << Press enter to continue" << std::endl;
+    std::cin.get();
+  }
+
   // Filtering the resulting image matchings
   std::vector<obindex2::ImageMatch> image_matches_filt;
   filterCandidates(image_matches, &image_matches_filt);
@@ -420,37 +466,89 @@ void LCDetector::debug(const unsigned image_id,
   // {
   //   std::cerr << ": Image ID " << image_matches_filt_l[i].image_id << " Score : " << image_matches_filt_l[i].score << std::endl;
   // }
-  //FIXME: Use a variable which can control option A or B 
-  // WIP
-  // Option A: Concatenate two vectors
-  // image_matches_filt.insert(image_matches_filt.end(), image_matches_filt_l.begin(), image_matches_filt_l.end());
 
+  std::vector<int> image_matches_filt_exist(image_matches_filt.size(), 0);
   // Option B: Alpha Beta filter on resulting vectors
   std::vector<obindex2::ImageMatch> image_matches_to_concat;
-  for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+
+  bool fusion_output_measurement = false;
+  if (fusion_output_measurement)
   {
-    bool found = false;
-    for (size_t j = 0; j < image_matches_filt.size(); j++)
+    for (size_t i = 0; i < image_matches_filt_l.size(); i++)
     {
-      if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
+      bool found = false;
+      for (size_t j = 0; j < image_matches_filt.size(); j++)
       {
-        image_matches_filt.at(j).score = image_matches_filt_l.at(i).score * alpha_ +
-                                         image_matches_filt.at(j).score * (1 - alpha_);
-        found = true;
-        break;
+        if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
+        {
+          image_matches_filt.at(j).score = image_matches_filt_l.at(i).score * alpha_ +
+                                           image_matches_filt.at(j).score * (1 - alpha_);
+          found = true;
+          image_matches_filt_exist.at(j) = 1;
+          break;
+        }
+      }
+
+      //TODO: Add here de Late Fusion
+      //Penalize candidates not found in both indexes
+      if (!found)
+      {
+        image_matches_filt_l.at(i).score *= non_sim_candidates_l;
+        image_matches_to_concat.push_back(image_matches_filt_l.at(i));
       }
     }
 
-    //Penalize candidates not found in both indexes
-    if (!found)
+    // Penalize candidates from Kpts not found in both indexes
+    for (size_t i = 0; i < image_matches_filt_exist.size(); i++)
     {
-      image_matches_filt_l.at(i).score *= non_sim_candidates_;
-      image_matches_to_concat.push_back(image_matches_filt_l.at(i));
+      if (image_matches_filt_exist[i] == 0)
+      {
+        image_matches_filt.at(i).score *= non_sim_candidates_p;
+      }
     }
+    image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
   }
 
-  image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
 
+  else
+  {
+    int min_num_matches = image_matches_filt_l.size();
+    if (image_matches_filt.size() < image_matches_filt_l.size())
+    {
+      min_num_matches = image_matches_filt.size();
+    }
+    if(min_num_matches > 5)
+      min_num_matches = 5;
+    // Borda Count
+    int score = min_num_matches;
+    for (size_t i = 0; i < min_num_matches; i++)
+    {
+      image_matches_filt_l[i].score = score;
+      image_matches_filt[i].score = score;
+
+      score --;
+    }
+    //Sum those that share the same match
+    for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+    {
+      bool found = false;
+      for (size_t j = 0; j < image_matches_filt.size(); j++)
+      {
+        if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
+        {
+          image_matches_filt.at(j).score += image_matches_filt_l.at(i).score;
+          found = true;
+          break;
+        }
+      }
+      if (!found)
+      {
+        image_matches_to_concat.push_back(image_matches_filt_l.at(i));
+      }
+    }
+    image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
+  }
+  
   std::sort(image_matches_filt.begin(), image_matches_filt.end());
 
   // std::cerr << "------ Combined Feature Image Candidates ------" << std::endl;
@@ -477,7 +575,6 @@ void LCDetector::debug(const unsigned image_id,
     out_file << std::endl;
     return;
   }
-
   // Selecting the corresponding island to be processed
   Island island = islands[0];
   std::vector<Island> p_islands;
@@ -486,28 +583,31 @@ void LCDetector::debug(const unsigned image_id,
   {
     island = p_islands[0];
   }
-
   bool overlap = island.overlaps(last_lc_island_);
   last_lc_island_ = island;
 
   unsigned best_img = island.img_id;
 
   // We obtain the image matchings, since we need them for compute F
-  std::vector<cv::DMatch> tmatches;
-  std::vector<cv::DMatch> tmatches_l;
+  std::vector<cv::DMatch> tmatches(0);
+  std::vector<cv::DMatch> tmatches_l(0);
 
   std::vector<cv::Point2f> tquery;
   std::vector<cv::Point2f> ttrain;
-
   unsigned inliers;
   if ((descs.cols == 0 || prev_descs_[best_img].cols == 0) &&
           descs_l.cols == 0 ||  prev_descs_l_[best_img].cols == 0)
-    inliers = 0;
+          {
+            inliers = 0;
+          }
 
   else
   {
-    ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
-    ratioMatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
+    if (descs.cols > 0 && prev_descs_[best_img].cols > 0)
+      ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
+
+    if (descs_l.cols > 0 && prev_descs_l_[best_img].cols > 0)
+      ratioMatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
 
     std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
 
@@ -541,7 +641,7 @@ void LCDetector::debug(const unsigned image_id,
     output_mat_.at<uchar>(image_id, best_img) = 1;
   }
 
-  if (inliers < min_inliers_ && debug_loops_)
+  if (inliers < min_inliers_ && debug_loops_ && gt_matrix_.rows >1)
   {
     cv::Mat gt_row = gt_matrix_.row(image_id);
     double min, max;
@@ -565,7 +665,6 @@ void LCDetector::debug(const unsigned image_id,
 
   auto end = std::chrono::steady_clock::now();
   auto diff = end - start;
-
   // Writing results
   out_file << island.min_img_id << "\t";                                       // min_id
   out_file << island.max_img_id << "\t";                                       // max_id
