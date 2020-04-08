@@ -35,6 +35,11 @@
 #include "ibow-lcd/geometricconstraints.h"
 #include "obindex2/binary_index.h"
 
+#include <future>
+#include <thread>
+
+using namespace std;
+
 namespace ibow_lcd
 {
 
@@ -197,6 +202,18 @@ cv::Mat DrawLineNPtsMatches(
     return output_mat_;
   }
 
+  std::vector<double> v_time_upd_voc_sthreat_pts_;
+  std::vector<double> v_time_upd_voc_sthreat_l_;
+  std::vector<double> v_time_upd_voc_multithreat_;
+
+  std::vector<double> v_time_search_voc_sthreat_pts_;
+  std::vector<double> v_time_search_voc_sthreat_l_;
+  std::vector<double> v_time_search_voc_multithreat_;
+
+  std::vector<double> v_time_merge_cand_island_select_;
+  std::vector<double> v_time_spatial_ver_;
+
+
 private:
 
   cv::Mat output_mat_;
@@ -251,6 +268,13 @@ private:
                 const std::vector<cv::KeyPoint> &kps,
                 const cv::Mat &descs);
 
+  void addImages(const unsigned image_id,
+                const std::vector<cv::KeyPoint> &kps,
+                const cv::Mat &descs);
+
+  void addImageLines(const unsigned image_id,
+                     const std::vector<cv::KeyPoint> &kps_l,
+                     const cv::Mat &descs_l);
   void addImage(const unsigned image_id,
                 const std::vector<cv::KeyPoint> &kps,
                 const cv::Mat &descs,

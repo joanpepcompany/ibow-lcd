@@ -19,7 +19,8 @@
 
 #include "ibow-lcd/lcdetector.h"
 
-namespace ibow_lcd{
+namespace ibow_lcd
+{
 
 LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0, -1, -1)
 {
@@ -66,11 +67,10 @@ LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0
   num_incorrect_match = 0;
   num_not_found_match = 0;
 
-  
   boost::filesystem::path wrong_matches_fold = params.output_path + std::string("/WrongMatches");
   wrong_matches_path_ = params.output_path + std::string("/WrongMatches/");
   boost::filesystem::remove_all(wrong_matches_fold);
-  
+
   boost::filesystem::path not_found_matches_fold = params.output_path + std::string("/NotFoundMatches");
   not_found_matches_path_ = params.output_path + std::string("/NotFoundMatches/");
   boost::filesystem::remove_all(not_found_matches_fold);
@@ -99,7 +99,8 @@ void LCDetector::process(const unsigned image_id,
   queue_ids_.push(image_id);
 
   // Assessing if, at least, p images have arrived
-  if (queue_ids_.size() < p_) {
+  if (queue_ids_.size() < p_)
+  {
     result->status = LC_NOT_ENOUGH_IMAGES;
     result->train_id = 0;
     result->inliers = 0;
@@ -115,7 +116,7 @@ void LCDetector::process(const unsigned image_id,
 
   // Searching similar images in the index
   // Matching the descriptors agains the current visual words
-  std::vector<std::vector<cv::DMatch> > matches_feats;
+  std::vector<std::vector<cv::DMatch>> matches_feats;
 
   // Searching the query descriptors against the features
   index_->searchDescriptors(descs, &matches_feats, 2, 64);
@@ -321,6 +322,11 @@ void LCDetector::debug(const unsigned image_id,
   auto end = std::chrono::steady_clock::now();
   auto diff = end - start;
 
+  if (inliers > min_inliers_)
+  {
+    output_mat_.at<uchar>(image_id, best_img) = 1;
+  }
+
   // Writing results
   out_file << island.min_img_id << "\t";                                       // min_id
   out_file << island.max_img_id << "\t";                                       // max_id
@@ -341,6 +347,7 @@ void LCDetector::debug(const unsigned image_id,
                        const cv::Mat &descs_l,
                        std::ofstream &out_file)
 {
+  bool b_multi_thread = true;
   // std::vector<cv::KeyPoint> kps_l;
   auto start = std::chrono::steady_clock::now();
   // Storing the keypoints and descriptors
@@ -354,7 +361,6 @@ void LCDetector::debug(const unsigned image_id,
 
   // Adding the current image to the queue to be added in the future
   queue_ids_.push(image_id);
-
   // Assessing if, at least, p images have arrived
   if (queue_ids_.size() < p_)
   {
@@ -365,7 +371,7 @@ void LCDetector::debug(const unsigned image_id,
     out_file << 0 << "\t";                                                       // img_id
     out_file << 0 << "\t";                                                       // overlap
     out_file << 0 << "\t";                                                       // Inliers
-    out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";                                // Voc. Size
+    out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";   // Voc. Size
     out_file << std::chrono::duration<double, std::milli>(diff).count() << "\t"; // Time
     out_file << std::endl;
     return;
@@ -375,182 +381,133 @@ void LCDetector::debug(const unsigned image_id,
   unsigned newimg_id = queue_ids_.front();
   queue_ids_.pop();
 
-  // Kls is empty because is not used in the Inv Index
-  std::vector<KeyPoint> kls_empty(prev_descs_l_[newimg_id].rows);
-  addImage(newimg_id, prev_kps_[newimg_id], prev_descs_[newimg_id],
-           kls_empty, prev_descs_l_[newimg_id]);
+  auto st_upd_voc_sthreat_pts = std::chrono::steady_clock::now();
+  if (!b_multi_thread)
+    addImage(newimg_id, prev_kps_[newimg_id], prev_descs_[newimg_id]);
 
+  auto diff_upd_voc_sthreat_pts = std::chrono::steady_clock::now() - st_upd_voc_sthreat_pts;
+  double upd_voc_sthreat_pts = std::chrono::duration<double, std::milli>(diff_upd_voc_sthreat_pts).count();
+
+  v_time_upd_voc_sthreat_pts_.push_back(upd_voc_sthreat_pts);
+
+  auto st_upd_voc_sthreat_l = std::chrono::steady_clock::now();
+  //TODO: Kls is empty because is not used in the Inv Index
+  std::vector<KeyPoint> kls_empty(prev_descs_l_[newimg_id].rows);
+  if(!b_multi_thread)
+    addImageLines(newimg_id, kls_empty, prev_descs_l_[newimg_id]);
+  // addImage(newimg_id, prev_kps_[newimg_id], prev_descs_[newimg_id], kls_empty, prev_descs_l_[newimg_id] );
+
+  auto diff_upd_voc_sthreat_l = std::chrono::steady_clock::now() - st_upd_voc_sthreat_l;
+  double upd_voc_sthreat_l = std::chrono::duration<double, std::milli>(diff_upd_voc_sthreat_l).count();
+
+  v_time_upd_voc_sthreat_l_.push_back(upd_voc_sthreat_l);
+  
+  auto st_upd_voc_multithreat = std::chrono::steady_clock::now();
+
+  if(b_multi_thread)
+  {
+    auto detect_r = std::async(std::launch::async, &LCDetector::addImages, this, newimg_id, std::ref(prev_kps_[newimg_id]), std::ref(prev_descs_[newimg_id]));
+
+    auto detect_l = std::async(std::launch::async, &LCDetector::addImageLines, this, newimg_id, std::ref(kls_empty), std::ref(prev_descs_l_[newimg_id]));
+
+    detect_r.wait();
+    detect_l.wait();
+  }
+
+  auto diff_upd_voc_multithreat = std::chrono::steady_clock::now() - st_upd_voc_multithreat;
+  double upd_voc_multithreat = std::chrono::duration<double, std::milli>(diff_upd_voc_multithreat).count();
+
+  v_time_upd_voc_multithreat_.push_back(upd_voc_multithreat);
+
+
+ 
+  //TODO: Start time
+  auto st_search_voc_sthreat_pts = std::chrono::steady_clock::now();
 
   // Searching similar images in the index
   // Matching the descriptors agains the current visual words
   std::vector<std::vector<cv::DMatch>> matches_feats;
-  std::vector<std::vector<cv::DMatch>> matches_feats_l;
   // Searching the query descriptors against the features
   index_->searchDescriptors(descs, &matches_feats, 2, 64);
-  index_l_->searchDescriptors(descs_l, &matches_feats_l, 2, 64);
-
   // Filtering matches according to the ratio test
   std::vector<cv::DMatch> matches;
-  std::vector<cv::DMatch> matches_l;
   filterMatches(matches_feats, &matches);
-  filterMatches(matches_feats_l, &matches_l);
-
   std::vector<obindex2::ImageMatch> image_matches;
-  std::vector<obindex2::ImageMatch> image_matches_l;
-  // We look for similar images according to the filtered matches found
   index_->searchImages(descs, matches, &image_matches, true);
-  index_l_->searchImages(descs_l, matches_l, &image_matches_l, true);
-
-  // std::cerr << "image_matches[0].score : "   << image_matches[0].score <<   "image_matches_l[0].score : " <<  image_matches_l[0].score << std::endl;
-
-  float non_sim_candidates_p = 1, non_sim_candidates_l = 1;
-
-  if (image_matches[0].score == 0 ||  image_matches_l[0].score == 0)
-  {
-    if(image_matches[0].score == 0)
-    {
-      non_sim_candidates_p = 0;
-      non_sim_candidates_l = 1;
-    }
-    else
-    {
-      non_sim_candidates_p = 1;
-      non_sim_candidates_l = 0;
-    }
-    
-  }
-  else if (image_matches[0].score >= image_matches_l[0].score)
-  {
-    non_sim_candidates_p = image_matches_l[0].score / image_matches[0].score;
-    non_sim_candidates_l = 1 - non_sim_candidates_p;
-  }
-
-  else
-  {
-    non_sim_candidates_l = image_matches[0].score / image_matches_l[0].score;
-    non_sim_candidates_p = 1 - non_sim_candidates_l;
-  }
-
-// std::cerr << "non_sim_candidates_p : " << non_sim_candidates_p << "non_sim_candidates_l : " << non_sim_candidates_l << std::endl;
-  if (non_sim_candidates_l <0 || non_sim_candidates_l > 1){
-  std::cerr << "ERROR: Non_sim_candidates_l : " << non_sim_candidates_l << std::endl;
-  std::cerr << " << Press enter to continue" << std::endl;
-  std::cin.get();
-
-  }
-
-  if (non_sim_candidates_p < 0 || non_sim_candidates_p > 1)
-  {
-    std::cerr << "ERROR: Non_sim_candidates_p : " << non_sim_candidates_p << std::endl;
-
-    std::cerr << " << Press enter to continue" << std::endl;
-    std::cin.get();
-  }
 
   // Filtering the resulting image matchings
   std::vector<obindex2::ImageMatch> image_matches_filt;
   filterCandidates(image_matches, &image_matches_filt);
 
+  auto diff_search_voc_sthreat_pts = std::chrono::steady_clock::now() - st_search_voc_sthreat_pts;
+  double search_voc_sthreat_pts = std::chrono::duration<double, std::milli>(diff_search_voc_sthreat_pts).count();
+
+  v_time_search_voc_sthreat_pts_.push_back(search_voc_sthreat_pts);
+  //LINES
+  auto st_search_voc_sthreat_l = std::chrono::steady_clock::now();
+
+  std::vector<std::vector<cv::DMatch>> matches_feats_l;
+  index_l_->searchDescriptors(descs_l, &matches_feats_l, 2, 64);
+  // Filtering matches according to the ratio test
+  std::vector<cv::DMatch> matches_l;
+  filterMatches(matches_feats_l, &matches_l);
+
+  std::vector<obindex2::ImageMatch> image_matches_l;
+  // We look for similar images according to the filtered matches found
+  index_l_->searchImages(descs_l, matches_l, &image_matches_l, true);
+
+  // Filtering the resulting image matchings
   std::vector<obindex2::ImageMatch> image_matches_filt_l;
   filterCandidates(image_matches_l, &image_matches_filt_l);
 
-  // Debug Candidates
-  // std::cerr << "------  Feature Image Candidates ------" << std::endl;
-  // for (size_t i = 0; i < image_matches_filt.size(); i++)
-  // {
-  //   std::cerr << ": Image ID " << image_matches_filt[i].image_id << " Score : " << image_matches_filt[i].score << std::endl;
-  // }
+  auto diff_search_voc_sthreat_l = std::chrono::steady_clock::now() - st_search_voc_sthreat_l;
+  double search_voc_sthreat_l = std::chrono::duration<double, std::milli>(diff_search_voc_sthreat_l).count();
 
-  // std::cerr << "------  LINE Image Candidates ------" << std::endl;
-  // for (size_t i = 0; i < image_matches_filt_l.size(); i++)
-  // {
-  //   std::cerr << ": Image ID " << image_matches_filt_l[i].image_id << " Score : " << image_matches_filt_l[i].score << std::endl;
-  // }
+  v_time_search_voc_sthreat_l_.push_back(search_voc_sthreat_l);
+  // TODO: END TIME
+  //  FUSE CANDIDATES OF Visual Vocabulary
+  // Borda Count
+  auto st_time_merge = std::chrono::steady_clock::now();
 
-  std::vector<int> image_matches_filt_exist(image_matches_filt.size(), 0);
-  // Option B: Alpha Beta filter on resulting vectors
+  int min_num_matches = image_matches_filt_l.size();
+  if (image_matches_filt.size() < image_matches_filt_l.size())
+  {
+    min_num_matches = image_matches_filt.size();
+  }
+  // if(min_num_matches > 5)
+  //   min_num_matches = 5;
+
+  int score = min_num_matches;
+  for (size_t i = 0; i < min_num_matches; i++)
+  {
+    image_matches_filt_l[i].score = score;
+    image_matches_filt[i].score = score;
+
+    score--;
+  }
   std::vector<obindex2::ImageMatch> image_matches_to_concat;
 
-  bool fusion_output_measurement = false;
-  if (fusion_output_measurement)
+  //Sum those that share the same match
+  for (size_t i = 0; i < image_matches_filt_l.size(); i++)
   {
-    for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+    bool found = false;
+    for (size_t j = 0; j < image_matches_filt.size(); j++)
     {
-      bool found = false;
-      for (size_t j = 0; j < image_matches_filt.size(); j++)
+      if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
       {
-        if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
-        {
-          image_matches_filt.at(j).score = image_matches_filt_l.at(i).score * alpha_ +
-                                           image_matches_filt.at(j).score * (1 - alpha_);
-          found = true;
-          image_matches_filt_exist.at(j) = 1;
-          break;
-        }
-      }
-
-      //TODO: Add here de Late Fusion
-      //Penalize candidates not found in both indexes
-      if (!found)
-      {
-        image_matches_filt_l.at(i).score *= non_sim_candidates_l;
-        image_matches_to_concat.push_back(image_matches_filt_l.at(i));
+        image_matches_filt.at(j).score += image_matches_filt_l.at(i).score;
+        found = true;
+        break;
       }
     }
-
-    // Penalize candidates from Kpts not found in both indexes
-    for (size_t i = 0; i < image_matches_filt_exist.size(); i++)
+    if (!found)
     {
-      if (image_matches_filt_exist[i] == 0)
-      {
-        image_matches_filt.at(i).score *= non_sim_candidates_p;
-      }
+      image_matches_to_concat.push_back(image_matches_filt_l.at(i));
     }
-    image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
   }
+  image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
 
-
-  else
-  {
-    int min_num_matches = image_matches_filt_l.size();
-    if (image_matches_filt.size() < image_matches_filt_l.size())
-    {
-      min_num_matches = image_matches_filt.size();
-    }
-    if(min_num_matches > 5)
-      min_num_matches = 5;
-    // Borda Count
-    int score = min_num_matches;
-    for (size_t i = 0; i < min_num_matches; i++)
-    {
-      image_matches_filt_l[i].score = score;
-      image_matches_filt[i].score = score;
-
-      score --;
-    }
-    //Sum those that share the same match
-    for (size_t i = 0; i < image_matches_filt_l.size(); i++)
-    {
-      bool found = false;
-      for (size_t j = 0; j < image_matches_filt.size(); j++)
-      {
-        if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
-        {
-          image_matches_filt.at(j).score += image_matches_filt_l.at(i).score;
-          found = true;
-          break;
-        }
-      }
-      if (!found)
-      {
-        image_matches_to_concat.push_back(image_matches_filt_l.at(i));
-      }
-    }
-    image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
-  }
-  
   std::sort(image_matches_filt.begin(), image_matches_filt.end());
-
   // std::cerr << "------ Combined Feature Image Candidates ------" << std::endl;
   // for (size_t i = 0; i < image_matches_filt.size(); i++)
   // {
@@ -559,6 +516,56 @@ void LCDetector::debug(const unsigned image_id,
 
   std::vector<Island> islands;
   buildIslands(image_matches_filt, &islands);
+
+  // bool borda_islands = false;
+  // if (borda_islands)
+  // {
+  //   std::vector<Island> islands_l;
+  //   std::vector<Island> islands_to_concat;
+
+  //   buildIslands(image_matches_filt_l, &islands_l);
+  //   if ((islands_l.size() > 0) || (islands.size() > 0))
+  //   {
+  //     int min_num_matches = islands_l.size();
+  //     if (islands.size() < islands_l.size())
+  //     {
+  //       min_num_matches = islands.size();
+  //     }
+  //     // if(min_num_matches > 5)
+  //     //   min_num_matches = 5;
+  //     // Borda Count
+  //     int score = min_num_matches;
+  //     for (size_t i = 0; i < min_num_matches; i++)
+  //     {
+  //       islands_l[i].score = score;
+  //       islands[i].score = score;
+
+  //       score--;
+  //     }
+  //     //Sum those that share the same match
+  //     for (size_t i = 0; i < islands_l.size(); i++)
+  //     {
+  //       bool found = false;
+  //       for (size_t j = 0; j < islands.size(); j++)
+  //       {
+
+  //         if ((islands_l.at(i).img_id >= islands.at(j).min_img_id && islands_l.at(i).img_id <= islands.at(j).max_img_id)||
+  //         (islands.at(j).img_id >= islands_l.at(i).min_img_id && islands.at(j).img_id <= islands_l.at(i).max_img_id))
+  //         {
+  //           islands.at(j).score += islands_l.at(i).score;
+  //           found = true;
+  //           break;
+  //         }
+  //       }
+  //       if (!found)
+  //       {
+  //         islands_to_concat.push_back(islands_l.at(i));
+  //       }
+  //     }
+  //     islands.insert(islands.end(), islands_to_concat.begin(), islands_to_concat.end());
+  //   }
+  // }
+  std::sort(islands.begin(), islands.end());
 
   if (!islands.size())
   {
@@ -570,7 +577,7 @@ void LCDetector::debug(const unsigned image_id,
     out_file << 0 << "\t";                                                       // img_id
     out_file << 0 << "\t";                                                       // overlap
     out_file << 0 << "\t";                                                       // Inliers
-    out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";                                // Voc. Size
+    out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";   // Voc. Size
     out_file << std::chrono::duration<double, std::milli>(diff).count() << "\t"; // Time
     out_file << std::endl;
     return;
@@ -588,45 +595,68 @@ void LCDetector::debug(const unsigned image_id,
 
   unsigned best_img = island.img_id;
 
+  auto diff_time_merge = std::chrono::steady_clock::now() - st_time_merge;
+  double time_merge_cand = std::chrono::duration<double, std::milli>(diff_time_merge).count();
+
+  v_time_merge_cand_island_select_.push_back(time_merge_cand);
+  // TODO: End time mix
   // We obtain the image matchings, since we need them for compute F
   std::vector<cv::DMatch> tmatches(0);
   std::vector<cv::DMatch> tmatches_l(0);
 
   std::vector<cv::Point2f> tquery;
   std::vector<cv::Point2f> ttrain;
+
   unsigned inliers;
   if ((descs.cols == 0 || prev_descs_[best_img].cols == 0) &&
-          descs_l.cols == 0 ||  prev_descs_l_[best_img].cols == 0)
-          {
-            inliers = 0;
-          }
+          descs_l.cols == 0 ||
+      prev_descs_l_[best_img].cols == 0)
+  {
+    inliers = 0;
+  }
 
   else
   {
+    //TODO: start spatial verification time
+
+    auto st_time_spatial_ver = std::chrono::steady_clock::now();
+
     if (descs.cols > 0 && prev_descs_[best_img].cols > 0)
       ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
 
     if (descs_l.cols > 0 && prev_descs_l_[best_img].cols > 0)
       ratioMatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
 
+    //----
+    int pt_matches = tmatches.size();
+    int l_matches = tmatches_l.size();
+    double inl_ratio_pt = max(100.0 * pt_matches / descs.cols, 100.0 * pt_matches / prev_descs_[best_img].cols);
+    double inl_ratio_ls = max(100.0 * l_matches / descs_l.cols, 100.0 * l_matches / prev_descs_l_[best_img].cols);
+    bool eval_geom_const = false;
+    //  if( inl_ratio_pt > 30 || inl_ratio_ls > 30)
+    //  {
     std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
 
     int pts_inliers = geomConstraints->getPtsInliers();
     int line_inliers = geomConstraints->getLinesInliers();
-
-    //FIXME: Save pts inliers and line inliers for pts and lines separately to plot on Matlab?
     inliers = pts_inliers + line_inliers;
-    // }
-  }
+    auto diff_time_spatial_ver = std::chrono::steady_clock::now() - st_time_spatial_ver;
+    double time_spatial_ver = std::chrono::duration<double, std::milli>(diff_time_spatial_ver).count();
 
+    v_time_spatial_ver_.push_back(time_spatial_ver);
+    //TODO: spatial verification time
+    //  }
+
+    //  else inliers= 0;
+  }
   bool b_wait = false;
 
   int display_time = 0;
   if (inliers > min_inliers_ && debug_loops_)
   {
     cv::Mat debug_img;
-    if (! DebugProposedIslandWithMatches(v_images, image_id, best_img,
-                          inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, display_time, debug_img))
+    if (!DebugProposedIslandWithMatches(v_images, image_id, best_img,
+                                        inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, display_time, debug_img))
     {
       std::string idx = std::to_string(num_incorrect_match);
       imwrite(wrong_matches_path_ + idx + ".png", debug_img);
@@ -636,12 +666,12 @@ void LCDetector::debug(const unsigned image_id,
     cv::imshow("LC Results", debug_img);
   }
 
-  if(inliers > min_inliers_)
+  if (inliers > min_inliers_)
   {
     output_mat_.at<uchar>(image_id, best_img) = 1;
   }
 
-  if (inliers < min_inliers_ && debug_loops_ && gt_matrix_.rows >1)
+  if (inliers < min_inliers_ && debug_loops_ && gt_matrix_.rows > 1)
   {
     cv::Mat gt_row = gt_matrix_.row(image_id);
     double min, max;
@@ -651,7 +681,7 @@ void LCDetector::debug(const unsigned image_id,
       cv::Mat debug_img;
       int displ_time;
       DebugProposedIslandWithMatches(v_images, image_id, best_img,
-                          inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, displ_time, debug_img);
+                                     inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, displ_time, debug_img);
       std::string idx = std::to_string(num_not_found_match);
       imwrite(not_found_matches_path_ + idx + ".png", debug_img);
       num_not_found_match++;
@@ -659,9 +689,9 @@ void LCDetector::debug(const unsigned image_id,
   }
 
   if (b_wait)
-  cv::waitKey(0);
-  else if( display_time != 0)
-  cv::waitKey(10);
+    cv::waitKey(0);
+  else if (display_time != 0)
+    cv::waitKey(10);
 
   auto end = std::chrono::steady_clock::now();
   auto diff = end - start;
@@ -674,33 +704,6 @@ void LCDetector::debug(const unsigned image_id,
   out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";   // Voc. Size
   out_file << std::chrono::duration<double, std::milli>(diff).count() << "\t"; // Time
   out_file << std::endl;
-}
-
-void LCDetector::addImage(const unsigned image_id,
-                          const std::vector<cv::KeyPoint> &kps,
-                          const cv::Mat &descs)
-{
-  if (index_->numImages() == 0)
-  {
-    // This is the first image that is inserted into the index
-    index_->addImage(image_id, kps, descs);
-  }
-  else
-  {
-    // We have to search the descriptor and filter them before adding descs
-    // Matching the descriptors
-    std::vector<std::vector<cv::DMatch>> matches_feats;
-
-    // Searching the query descriptors against the features
-    index_->searchDescriptors(descs, &matches_feats, 2, 64);
-
-    // Filtering matches according to the ratio test
-    std::vector<cv::DMatch> matches;
-    filterMatches(matches_feats, &matches);
-
-    // Finally, we add the image taking into account the correct matchings
-    index_->addImage(image_id, kps, descs, matches);
-  }
 }
 
 void LCDetector::addImage(const unsigned image_id,
@@ -755,6 +758,87 @@ void LCDetector::filterMatches(
     {
       matches->push_back(matches_feats[m][0]);
     }
+  }
+}
+
+void LCDetector::addImage(const unsigned image_id,
+                          const std::vector<cv::KeyPoint> &kps,
+                          const cv::Mat &descs)
+{
+  if (index_->numImages() == 0)
+  {
+    // This is the first image that is inserted into the index
+    index_->addImage(image_id, kps, descs);
+  }
+  else
+  {
+    // We have to search the descriptor and filter them before adding descs
+    // Matching the descriptors
+    std::vector<std::vector<cv::DMatch>> matches_feats;
+
+    // Searching the query descriptors against the features
+    index_->searchDescriptors(descs, &matches_feats, 2, 64);
+
+    // Filtering matches according to the ratio test
+    std::vector<cv::DMatch> matches;
+    filterMatches(matches_feats, &matches);
+
+    // Finally, we add the image taking into account the correct matchings
+    index_->addImage(image_id, kps, descs, matches);
+  }
+}
+
+void LCDetector::addImages(const unsigned image_id,
+                          const std::vector<cv::KeyPoint> &kps,
+                          const cv::Mat &descs)
+{
+  if (index_->numImages() == 0)
+  {
+    // This is the first image that is inserted into the index
+    index_->addImage(image_id, kps, descs);
+  }
+  else
+  {
+    // We have to search the descriptor and filter them before adding descs
+    // Matching the descriptors
+    std::vector<std::vector<cv::DMatch>> matches_feats;
+
+    // Searching the query descriptors against the features
+    index_->searchDescriptors(descs, &matches_feats, 2, 64);
+
+    // Filtering matches according to the ratio test
+    std::vector<cv::DMatch> matches;
+    filterMatches(matches_feats, &matches);
+
+    // Finally, we add the image taking into account the correct matchings
+    index_->addImage(image_id, kps, descs, matches);
+  }
+}
+
+void LCDetector::addImageLines(const unsigned image_id,
+                               const std::vector<cv::KeyPoint> &kps_l,
+                               const cv::Mat &descs_l)
+{
+  if (index_l_->numImages() == 0)
+  {
+    // This is the first image that is inserted into the index
+    std::vector<cv::KeyPoint> v_kps(descs_l.rows);
+    index_l_->addImage(image_id, v_kps, descs_l);
+  }
+  else
+  {
+    std::vector<std::vector<cv::DMatch>> matches_feats_l;
+
+    // Searching the query descriptors against the features
+    index_l_->searchDescriptors(descs_l, &matches_feats_l, 2, 64);
+
+    // Filtering matches according to the ratio test
+    std::vector<cv::DMatch> matches_l;
+    filterMatches(matches_feats_l, &matches_l);
+
+    // Finally, we add the image taking into account the correct matchings
+    std::vector<cv::KeyPoint> v_kps(descs_l.rows);
+    index_l_->addImage(image_id, v_kps, descs_l, matches_l);
   }
 }
 
@@ -877,7 +961,7 @@ unsigned LCDetector::checkEpipolarGeometry(
             conf_prob_,                     // Confidence probability
             inliers);                       // Match status (inlier or outlier)
   }
-   // Extract the surviving (inliers) matches
+  // Extract the surviving (inliers) matches
   auto it = inliers.begin();
   unsigned total_inliers = 0;
   for (; it != inliers.end(); it++)
@@ -971,11 +1055,11 @@ void LCDetector::convertPoints(const std::vector<cv::KeyPoint> &query_kps,
 }
 
 bool LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
-                                        const int &query_idx,
-                                        const int &train_idx,
-                                        const int &score,
-                                        int &display_time,
-                                        cv::Mat &concat)
+                                     const int &query_idx,
+                                     const int &train_idx,
+                                     const int &score,
+                                     int &display_time,
+                                     cv::Mat &concat)
 {
   bool correct = false;
   //Copy and write the image ID
@@ -1047,15 +1131,15 @@ bool LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
 }
 
 bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_images,
-                                        const int &query_idx,
-                                        const int &train_idx,
-                                        const int &score,
-                                        const std::vector<std::vector<cv::KeyPoint> > &v_kps,
-                                        const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
-                                        const std::vector<DMatch> &v_matches,
-                                        const std::vector<DMatch> &v_matches_l,
-                                        int &display_time,
-                                        cv::Mat &matched_img)
+                                                const int &query_idx,
+                                                const int &train_idx,
+                                                const int &score,
+                                                const std::vector<std::vector<cv::KeyPoint>> &v_kps,
+                                                const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
+                                                const std::vector<DMatch> &v_matches,
+                                                const std::vector<DMatch> &v_matches_l,
+                                                int &display_time,
+                                                cv::Mat &matched_img)
 {
   bool correct = false;
   //Copy and write the image ID
@@ -1073,11 +1157,11 @@ bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_im
   // cv::Mat black_rows = cv::Mat::zeros(30, concat.cols, CV_8UC3);
   // cv::vconcat(concat, black_rows, concat);
 
- matched_img = DrawLineNPtsMatches(v_images, query_idx, train_idx, v_kls, v_kps,
-                      v_matches_l, v_matches);
+  matched_img = DrawLineNPtsMatches(v_images, query_idx, train_idx, v_kls, v_kps,
+                                    v_matches_l, v_matches);
 
-      // Add extra information like if its LC and number of inliers
-      putText(matched_img, "Inliers: " + std::to_string(score), cv::Point(5, matched_img.rows - 10), 1, 1, cv::Scalar(255, 255, 255), 2, 0);
+  // Add extra information like if its LC and number of inliers
+  putText(matched_img, "Inliers: " + std::to_string(score), cv::Point(5, matched_img.rows - 10), 1, 1, cv::Scalar(255, 255, 255), 2, 0);
 
   if (gt_matrix_.rows > 1)
   {
@@ -1155,7 +1239,7 @@ cv::Mat LCDetector::DrawLineNPtsMatches(
   int range1 = (highest1 - lowest1) + 1;
   std::vector<unsigned int> r1l(kls_matches.size()), g1l(kls_matches.size()), b1l(kls_matches.size()); //the color of lines
 
-   std::vector<unsigned int> r1p(kpts_matches.size()), g1p(kpts_matches.size()), b1p(kpts_matches.size()); //the color of lines
+  std::vector<unsigned int> r1p(kpts_matches.size()), g1p(kpts_matches.size()), b1p(kpts_matches.size()); //the color of lines
 
   for (unsigned int pair = 0; pair < kls_matches.size(); pair++)
   {
@@ -1191,10 +1275,10 @@ cv::Mat LCDetector::DrawLineNPtsMatches(
 
     lineIDLeft = kpts_matches[pair].trainIdx;
     lineIDRight = kpts_matches[pair].queryIdx;
-  
-    cv::circle(tr_img,tr_kps[lineIDLeft].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]),2);
 
-    cv::circle(q_img,q_kps[lineIDRight].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]),2);
+    cv::circle(tr_img, tr_kps[lineIDLeft].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]), 2);
+
+    cv::circle(q_img, q_kps[lineIDRight].pt, 5.0, CV_RGB(r1p[pair], g1p[pair], b1p[pair]), 2);
   }
 
   cv::Mat cvResultColorImage1 = cv::Mat(cv::Size(imageWidth * 2, imageHeight),
@@ -1246,27 +1330,27 @@ cv::Mat LCDetector::DrawLineNPtsMatches(
 cv::Mat LCDetector::draw2DLines(const cv::Mat gray_img,
                                 const std::vector<KeyLine> &keylines)
 {
-    cv::Mat line_img;
-    if (gray_img.type() == CV_8UC1)
-    {
-        cvtColor(gray_img, line_img, CV_GRAY2RGB);
-    }
-    else
-        line_img = gray_img;
+  cv::Mat line_img;
+  if (gray_img.type() == CV_8UC1)
+  {
+    cvtColor(gray_img, line_img, CV_GRAY2RGB);
+  }
+  else
+    line_img = gray_img;
 
-    for (size_t i = 0; i < keylines.size(); i++)
-    {
-        /* get a random color */
-       
-        // /* get ends of a line */
-        cv::Point pt1 = cv::Point(int(keylines[i].startPointX), int(keylines[i].startPointY));
-        cv::Point pt2 = cv::Point(int(keylines[i].endPointX), int(keylines[i].endPointY));
+  for (size_t i = 0; i < keylines.size(); i++)
+  {
+    /* get a random color */
 
-        /* draw line */
-        line(line_img, pt1, pt2, cv::Scalar(0, 0, 255), 2);
-    }
+    // /* get ends of a line */
+    cv::Point pt1 = cv::Point(int(keylines[i].startPointX), int(keylines[i].startPointY));
+    cv::Point pt2 = cv::Point(int(keylines[i].endPointX), int(keylines[i].endPointY));
 
-    return line_img;
+    /* draw line */
+    line(line_img, pt1, pt2, cv::Scalar(0, 0, 255), 2);
+  }
+
+  return line_img;
 }
 
 } // namespace ibow_lcd
