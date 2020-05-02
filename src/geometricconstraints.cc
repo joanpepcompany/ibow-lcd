@@ -25,13 +25,25 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     // else
     //     line_matches = matches_l;
 
+std::vector<cv::DMatch> filt_matches_l;
+std::vector<cv::DMatch> non_filt_matches;
+// if(geom_params_.b_l_global_rot_)
+// {
+//     FilterOrientMatches(q_kls, t_kls, matches_l,
+//                         filt_matches_l,
+//                         non_filt_matches);
+// }
+// else
+// {
+    filt_matches_l = matches_l;    
+// }
 
 
     //Change the format for faster evaluation of matched lines
     std::vector<int> matches_l_int(q_kls.size(), NULL);
-    for (size_t j = 0; j < matches_l.size(); j++)
+    for (size_t j = 0; j < filt_matches_l.size(); j++)
     {
-        matches_l_int.at(matches_l[j].queryIdx) = matches_l[j].trainIdx;
+        matches_l_int.at(filt_matches_l[j].queryIdx) = filt_matches_l[j].trainIdx;
     }
     // Compute inliers using: Line Intersection Points, Kpts, Line Endpoints and Center Line Pts
     
@@ -261,7 +273,7 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
       {
           if(*it4)
           {
-              inl_ctrpts_matches[matches_l[idx4].queryIdx] = matches_l[idx4].trainIdx;
+              inl_ctrpts_matches[filt_matches_l[idx4].queryIdx] = filt_matches_l[idx4].trainIdx;
               ctrpts_inliers ++;
           }
           idx4++;
@@ -331,7 +343,7 @@ GeomConstr::GeomConstr(const cv::Mat &q_img,
     //   std::cerr << " -Endpts Pts inliers: " << num_endpts_inl << std::endl;
     //   std::cerr << " -Ctr Pts inliers: " << num_ctrpts_inl << std::endl;
 
-    //   std::cerr << " - Total line inliers  : " << total_line_inliers << " of "  << matches_l.size()<< std::endl;
+    //   std::cerr << " - Total line inliers  : " << total_line_inliers << " of "  << filt_matches_l.size()<< std::endl;
     //   std::cerr << " -Total Ktps Inliers : " << kpts_inliers << " of " << v_p_kpts.size() << std::endl;
 
     //   std::cerr << "Total inliers =  : " << kpts_inliers + total_line_inliers  << std::endl;
@@ -350,7 +362,8 @@ void GeomConstr::FilterOrientMatches(const std::vector<KeyLine> q_lines,
                                      std::vector<cv::DMatch> &non_filt_matches)
 {
     //Compute line orientation change between pair lines of the two frames
-    double global_angle = GlobalRotationImagePair(q_lines, tr_lines);
+    // double global_angle = GlobalRotationImagePair(q_lines, tr_lines);
+double global_angle = 0.0;
     // std::cerr << "global_angle : " << global_angle << std::endl
             //   << std::endl;
 

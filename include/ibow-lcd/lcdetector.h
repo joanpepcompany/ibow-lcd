@@ -53,7 +53,7 @@ struct LCDetectorParams
                        purge_descriptors(true),
                        min_feat_apps(2),
                        p(250),
-                       alpha(0.5),
+                       nndr_bf_lines(0.7),
                        nndr(0.8f),
                        nndr_bf(0.8f),
                        ep_dist(2.0),
@@ -84,7 +84,7 @@ struct LCDetectorParams
 
   // Loop Closure Params
   unsigned p;                // Previous images to be discarded when searching for a loop
-  float alpha;
+  float nndr_bf_lines;
   float nndr;                // Nearest neighbour distance ratio
   float nndr_bf;             // NNDR when matching with brute force
   double ep_dist;            // Distance to epipolar lines
@@ -172,13 +172,19 @@ public:
       const std::vector<cv::Mat> &v_images,
       const int &query_idx,
       const int &train_idx,
-      const int &score,
+      const int &score_pts,
+      const int &score_lines,
       const std::vector<std::vector<cv::KeyPoint>> &v_kps,
       const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
       const std::vector<DMatch> &v_matches,
       const std::vector<DMatch> &v_matches_l,
       int &display_time,
       cv::Mat &matched_img);
+
+  bool checkOrient(const std::vector<cv::line_descriptor::KeyLine> &query_kls, 
+const std::vector<cv::line_descriptor::KeyLine> &train_kls, const DMatch &match);
+
+  void SearchVocCand(const cv::Mat & descs, std::vector<obindex2::ImageMatch> &image_matches_filt);
 
 cv::Mat DrawLineNPtsMatches(
     std::vector<cv::Mat> v_imgs,
@@ -213,13 +219,15 @@ cv::Mat DrawLineNPtsMatches(
   std::vector<double> v_time_merge_cand_island_select_;
   std::vector<double> v_time_spatial_ver_;
 
+  std::vector<double> v_line_inliers_;
+
 
 private:
 
   cv::Mat output_mat_;
   // Parameters
   unsigned p_;
-  float alpha_;
+  float nndr_bf_lines_;
   float nndr_;
   float nndr_bf_;
   float non_sim_candidates_;
@@ -241,6 +249,7 @@ private:
   Island last_lc_island_;
   int min_consecutive_loops_;
   int consecutive_loops_;
+  bool b_use_last_island_;
 
   // Ground Truth Matrix
   cv::Mat gt_matrix_;
@@ -300,6 +309,17 @@ private:
   void ratioMatchingBF(const cv::Mat &query,
                        const cv::Mat &train,
                        std::vector<cv::DMatch> *matches);
+
+  void ratioMatchingBFLines(
+      const std::vector<cv::line_descriptor::KeyLine> &query_kls,
+      const std::vector<cv::line_descriptor::KeyLine> &train_kls,
+      const cv::Mat &query,
+      const cv::Mat &train,
+      std::vector<cv::DMatch> *matches);
+
+  void ratioMatchingBFLNoGeom(const cv::Mat &query,
+                                 const cv::Mat &train,
+                                 std::vector<cv::DMatch> *matches);
   void convertPoints(const std::vector<cv::KeyPoint> &query_kps,
                      const std::vector<cv::KeyPoint> &train_kps,
                      const std::vector<cv::DMatch> &matches,

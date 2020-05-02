@@ -24,6 +24,7 @@ namespace ibow_lcd
 
 LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0, -1, -1)
 {
+  b_use_last_island_ = false;
   // Creating the image index
   index_ = std::make_shared<obindex2::ImageIndex>(params.k,
                                                   params.s,
@@ -40,7 +41,7 @@ LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0
                                                     params.min_feat_apps);
   // Storing the remaining parameters
   p_ = params.p;
-  alpha_ = params.alpha;
+  nndr_bf_lines_ = params.nndr_bf_lines;
   nndr_ = params.nndr;
   nndr_bf_ = params.nndr_bf;
   ep_dist_ = params.ep_dist;
@@ -338,6 +339,24 @@ void LCDetector::debug(const unsigned image_id,
   out_file << std::endl;
 }
 
+  
+void LCDetector::SearchVocCand(const cv::Mat & descs, std::vector<obindex2::ImageMatch> &image_matches_filt)
+{
+   // Searching similar images in the index
+    // Matching the descriptors agains the current visual words
+    std::vector<std::vector<cv::DMatch>> matches_feats;
+    // Searching the query descriptors against the features
+    index_->searchDescriptors(descs, &matches_feats, 2, 64);
+    // Filtering matches according to the ratio test
+    std::vector<cv::DMatch> matches;
+    filterMatches(matches_feats, &matches);
+    std::vector<obindex2::ImageMatch> image_matches;
+    index_->searchImages(descs, matches, &image_matches, true);
+
+    // Filtering the resulting image matchings
+    filterCandidates(image_matches, &image_matches_filt);
+}
+
 // Debug IboW function adapted to Multiple Features with custom geometric constraints
 void LCDetector::debug(const unsigned image_id,
                        const std::vector<cv::Mat> &v_images,
@@ -424,20 +443,12 @@ void LCDetector::debug(const unsigned image_id,
   //TODO: Start time
   auto st_search_voc_sthreat_pts = std::chrono::steady_clock::now();
 
-  // Searching similar images in the index
-  // Matching the descriptors agains the current visual words
-  std::vector<std::vector<cv::DMatch>> matches_feats;
-  // Searching the query descriptors against the features
-  index_->searchDescriptors(descs, &matches_feats, 2, 64);
-  // Filtering matches according to the ratio test
-  std::vector<cv::DMatch> matches;
-  filterMatches(matches_feats, &matches);
-  std::vector<obindex2::ImageMatch> image_matches;
-  index_->searchImages(descs, matches, &image_matches, true);
-
-  // Filtering the resulting image matchings
   std::vector<obindex2::ImageMatch> image_matches_filt;
-  filterCandidates(image_matches, &image_matches_filt);
+  if (!b_multi_thread)
+  {
+    SearchVocCand(descs, image_matches_filt);
+  }
+
 
   auto diff_search_voc_sthreat_pts = std::chrono::steady_clock::now() - st_search_voc_sthreat_pts;
   double search_voc_sthreat_pts = std::chrono::duration<double, std::milli>(diff_search_voc_sthreat_pts).count();
@@ -446,24 +457,33 @@ void LCDetector::debug(const unsigned image_id,
   //LINES
   auto st_search_voc_sthreat_l = std::chrono::steady_clock::now();
 
-  std::vector<std::vector<cv::DMatch>> matches_feats_l;
-  index_l_->searchDescriptors(descs_l, &matches_feats_l, 2, 64);
-  // Filtering matches according to the ratio test
-  std::vector<cv::DMatch> matches_l;
-  filterMatches(matches_feats_l, &matches_l);
-
-  std::vector<obindex2::ImageMatch> image_matches_l;
-  // We look for similar images according to the filtered matches found
-  index_l_->searchImages(descs_l, matches_l, &image_matches_l, true);
-
-  // Filtering the resulting image matchings
   std::vector<obindex2::ImageMatch> image_matches_filt_l;
-  filterCandidates(image_matches_l, &image_matches_filt_l);
-
-  auto diff_search_voc_sthreat_l = std::chrono::steady_clock::now() - st_search_voc_sthreat_l;
+   if (!b_multi_thread)
+  {
+    SearchVocCand(descs_l, image_matches_filt_l);
+  }
+    auto diff_search_voc_sthreat_l = std::chrono::steady_clock::now() - st_search_voc_sthreat_l;
   double search_voc_sthreat_l = std::chrono::duration<double, std::milli>(diff_search_voc_sthreat_l).count();
 
   v_time_search_voc_sthreat_l_.push_back(search_voc_sthreat_l);
+
+  auto st_search_voc_mthreat = std::chrono::steady_clock::now();
+  if (b_multi_thread)
+  {
+    auto voc_cand_pts = std::async(std::launch::async, &LCDetector::SearchVocCand, this, std::ref(descs), std::ref(image_matches_filt));
+
+    auto voc_cand_l = std::async(std::launch::async, &LCDetector::SearchVocCand, this,  std::ref(descs_l), std::ref(image_matches_filt_l));
+
+    voc_cand_pts.wait();
+    voc_cand_l.wait();
+  }
+
+   auto diff_search_voc_mthreat = std::chrono::steady_clock::now() - st_search_voc_mthreat;
+  double search_voc_mthreat = std::chrono::duration<double, std::milli>(diff_search_voc_mthreat).count();
+
+  v_time_search_voc_multithreat_.push_back(search_voc_mthreat);
+
+
   // TODO: END TIME
   //  FUSE CANDIDATES OF Visual Vocabulary
   // Borda Count
@@ -480,8 +500,8 @@ void LCDetector::debug(const unsigned image_id,
   int score = min_num_matches;
   for (size_t i = 0; i < min_num_matches; i++)
   {
-    image_matches_filt_l[i].score = score;
-    image_matches_filt[i].score = score;
+    image_matches_filt_l[i].score = score * image_matches_filt_l[i].score ;
+    image_matches_filt[i].score = score * image_matches_filt[i].score;
 
     score--;
   }
@@ -495,16 +515,36 @@ void LCDetector::debug(const unsigned image_id,
     {
       if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
       {
-        image_matches_filt.at(j).score += image_matches_filt_l.at(i).score;
+        image_matches_filt.at(j).score =  sqrt (image_matches_filt.at(j).score  * image_matches_filt_l.at(i).score);
         found = true;
         break;
       }
     }
     if (!found)
     {
+      image_matches_filt_l.at(i).score =  image_matches_filt_l.at(i).score*0.5;
       image_matches_to_concat.push_back(image_matches_filt_l.at(i));
     }
   }
+
+  //Divide by 2 those candidates which only are in points list
+   for (size_t i = 0; i < image_matches_filt.size(); i++)
+  {
+    bool found = false;
+    for (size_t j = 0; j < image_matches_filt_l.size(); j++)
+    {
+      if (image_matches_filt.at(i).image_id == image_matches_filt_l.at(j).image_id)
+      {
+        found = true;
+        break;
+      }
+    }
+    if (!found)
+    {
+      image_matches_filt.at(i).score =  image_matches_filt.at(i).score * 0.5;
+    }
+  }
+
   image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
 
   std::sort(image_matches_filt.begin(), image_matches_filt.end());
@@ -585,14 +625,20 @@ void LCDetector::debug(const unsigned image_id,
   // Selecting the corresponding island to be processed
   Island island = islands[0];
   std::vector<Island> p_islands;
-  getPriorIslands(last_lc_island_, islands, &p_islands);
-  if (p_islands.size())
-  {
-    island = p_islands[0];
-  }
-  bool overlap = island.overlaps(last_lc_island_);
-  last_lc_island_ = island;
 
+  bool overlap = false;
+  if (b_use_last_island_)
+  {
+    getPriorIslands(last_lc_island_, islands, &p_islands);
+    if (p_islands.size())
+    {
+      island = p_islands[0];
+    }
+    bool overlap = island.overlaps(last_lc_island_);
+    last_lc_island_ = island;
+  }
+
+  
   unsigned best_img = island.img_id;
 
   auto diff_time_merge = std::chrono::steady_clock::now() - st_time_merge;
@@ -608,6 +654,8 @@ void LCDetector::debug(const unsigned image_id,
   std::vector<cv::Point2f> ttrain;
 
   unsigned inliers;
+  int pts_inliers = 0;
+  int line_inliers= 0 ;
   if ((descs.cols == 0 || prev_descs_[best_img].cols == 0) &&
           descs_l.cols == 0 ||
       prev_descs_l_[best_img].cols == 0)
@@ -624,8 +672,11 @@ void LCDetector::debug(const unsigned image_id,
     if (descs.cols > 0 && prev_descs_[best_img].cols > 0)
       ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
 
-    if (descs_l.cols > 0 && prev_descs_l_[best_img].cols > 0)
-      ratioMatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
+    if (descs_l.cols > 0 && prev_descs_l_[best_img].cols > 0 && geom_params_.b_l_global_rot_)
+      ratioMatchingBFLines(kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], &tmatches_l);
+
+    else if (descs_l.cols > 0 && prev_descs_l_[best_img].cols > 0 )
+      ratioMatchingBFLNoGeom(descs_l, prev_descs_l_[best_img], &tmatches_l);
 
     //----
     int pt_matches = tmatches.size();
@@ -637,18 +688,26 @@ void LCDetector::debug(const unsigned image_id,
     //  {
     std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
 
-    int pts_inliers = geomConstraints->getPtsInliers();
-    int line_inliers = geomConstraints->getLinesInliers();
+    pts_inliers = geomConstraints->getPtsInliers();
+    line_inliers = geomConstraints->getLinesInliers();
     inliers = pts_inliers + line_inliers;
     auto diff_time_spatial_ver = std::chrono::steady_clock::now() - st_time_spatial_ver;
     double time_spatial_ver = std::chrono::duration<double, std::milli>(diff_time_spatial_ver).count();
 
     v_time_spatial_ver_.push_back(time_spatial_ver);
+    v_line_inliers_.push_back(double(line_inliers));
     //TODO: spatial verification time
     //  }
 
     //  else inliers= 0;
   }
+
+  if( inliers < min_inliers_)
+    b_use_last_island_ = false;
+  
+  else
+    b_use_last_island_ = true;
+
   bool b_wait = false;
 
   int display_time = 0;
@@ -656,7 +715,7 @@ void LCDetector::debug(const unsigned image_id,
   {
     cv::Mat debug_img;
     if (!DebugProposedIslandWithMatches(v_images, image_id, best_img,
-                                        inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, display_time, debug_img))
+                                        pts_inliers, line_inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, display_time, debug_img))
     {
       std::string idx = std::to_string(num_incorrect_match);
       imwrite(wrong_matches_path_ + idx + ".png", debug_img);
@@ -681,8 +740,9 @@ void LCDetector::debug(const unsigned image_id,
       cv::Mat debug_img;
       int displ_time;
       DebugProposedIslandWithMatches(v_images, image_id, best_img,
-                                     inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, displ_time, debug_img);
+                                      pts_inliers, line_inliers, prev_kps_, prev_kls_, tmatches, tmatches_l, displ_time, debug_img);
       std::string idx = std::to_string(num_not_found_match);
+
       imwrite(not_found_matches_path_ + idx + ".png", debug_img);
       num_not_found_match++;
     }
@@ -994,6 +1054,99 @@ void LCDetector::ratioMatchingBF(const cv::Mat &query,
   }
 }
 
+void LCDetector::ratioMatchingBFLNoGeom(const cv::Mat &query,
+                                 const cv::Mat &train,
+                                 std::vector<cv::DMatch> *matches)
+{
+  matches->clear();
+  cv::BFMatcher matcher(cv::NORM_HAMMING);
+
+  // Matching descriptors
+  std::vector<std::vector<cv::DMatch>> matches12;
+  matcher.knnMatch(query, train, matches12, 2);
+
+  // Filtering the resulting matchings according to the given ratio
+  for (unsigned m = 0; m < matches12.size(); m++)
+  {
+    if (matches12[m][0].distance <= matches12[m][1].distance * nndr_bf_lines_)
+    {
+      matches->push_back(matches12[m][0]);
+    }
+  }
+}
+//TODO: Añadir kls
+void LCDetector::ratioMatchingBFLines(const std::vector<cv::line_descriptor::KeyLine> &query_kls, 
+const std::vector<cv::line_descriptor::KeyLine> &train_kls, 
+const cv::Mat &query,
+                                 const cv::Mat &train,
+                                 std::vector<cv::DMatch> *matches)
+{
+  matches->clear();
+  cv::BFMatcher matcher(cv::NORM_HAMMING);
+
+  // Matching descriptors
+  std::vector<std::vector<cv::DMatch>> matches12;
+  matcher.knnMatch(query, train, matches12, 4);
+
+  // Filtering the resulting matchings according to the given ratio
+  for (unsigned m = 0; m < matches12.size(); m++)
+  {
+    bool same_orient_0 = checkOrient(query_kls, train_kls, matches12[m][0]);
+    bool same_orient_1 = checkOrient(query_kls, train_kls, matches12[m][1]);
+    bool same_orient_2 = checkOrient(query_kls, train_kls, matches12[m][2]);
+    if (same_orient_0 && same_orient_1)
+    {
+      if (matches12[m][0].distance <= matches12[m][1].distance * nndr_bf_lines_)
+      {
+        matches->push_back(matches12[m][0]);
+        continue;
+      }
+    }
+    if (same_orient_0 && !same_orient_1)
+    {
+      if (same_orient_0 && !same_orient_2)
+      {
+        matches->push_back(matches12[m][0]);
+        continue;
+      }
+      else if(matches12[m][0].distance <= matches12[m][2].distance * nndr_bf_lines_)
+      {
+        matches->push_back(matches12[m][0]);
+        continue;
+      }
+    }
+     if (same_orient_1 && !same_orient_2)
+    {
+      if (!(matches12[m][0].distance <= matches12[m][1].distance * nndr_bf_lines_))
+      {
+        matches->push_back(matches12[m][1]);
+        continue;
+      }
+    }
+  }
+}
+
+bool LCDetector::checkOrient(const std::vector<cv::line_descriptor::KeyLine> &query_kls, 
+const std::vector<cv::line_descriptor::KeyLine> &train_kls, const DMatch &match)
+{
+  double global_angle = 0.0;
+   double angleDif = fabs(query_kls[match.queryIdx].angle + global_angle - train_kls[match.trainIdx].angle) * 57.29;
+
+        if (angleDif > 720)
+            angleDif -= 720;
+
+        if (angleDif > 360)
+            angleDif -= 360;
+
+        if (!((angleDif > 20) && (angleDif < 160) || (angleDif > 200) && (angleDif < 340)))
+        {
+            return true;
+        }
+
+        else
+            return false;
+}
+
 void LCDetector::convertPoints(const std::vector<cv::KeyPoint> &query_kps,
                                const std::vector<cv::KeyPoint> &train_kps,
                                const std::vector<cv::DMatch> &matches,
@@ -1133,7 +1286,8 @@ bool LCDetector::DebugProposedIsland(const std::vector<cv::Mat> &v_images,
 bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_images,
                                                 const int &query_idx,
                                                 const int &train_idx,
-                                                const int &score,
+                                                const int &score_pts,
+                                                const int &score_lines,
                                                 const std::vector<std::vector<cv::KeyPoint>> &v_kps,
                                                 const std::vector<std::vector<cv::line_descriptor::KeyLine>> &v_kls,
                                                 const std::vector<DMatch> &v_matches,
@@ -1143,10 +1297,14 @@ bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_im
 {
   bool correct = false;
   //Copy and write the image ID
-  cv::Mat query = draw2DLines(v_images[query_idx], v_kls[query_idx]);
-  putText(query, std::to_string(query_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
+  cv::Mat query;
+  if (v_kls[query_idx].size()>0)
+    query = draw2DLines(v_images[query_idx], v_kls[query_idx]);
 
-  cv::Mat train = draw2DLines(v_images[train_idx], v_kls[train_idx]);
+  putText(query, std::to_string(query_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
+  cv::Mat train;
+  if (v_kls[train_idx].size() > 0)
+    train = draw2DLines(v_images[train_idx], v_kls[train_idx]);
 
   putText(train, std::to_string(train_idx), cv::Point(20, 20), 1, 1, cv::Scalar(255, 0, 0), 2, 0);
 
@@ -1156,12 +1314,14 @@ bool LCDetector::DebugProposedIslandWithMatches(const std::vector<cv::Mat> &v_im
   // cv::hconcat(query, train, concat);
   // cv::Mat black_rows = cv::Mat::zeros(30, concat.cols, CV_8UC3);
   // cv::vconcat(concat, black_rows, concat);
-
+  
   matched_img = DrawLineNPtsMatches(v_images, query_idx, train_idx, v_kls, v_kps,
                                     v_matches_l, v_matches);
 
   // Add extra information like if its LC and number of inliers
-  putText(matched_img, "Inliers: " + std::to_string(score), cv::Point(5, matched_img.rows - 10), 1, 1, cv::Scalar(255, 255, 255), 2, 0);
+  putText(matched_img, "Inliers pts: " + std::to_string(score_pts), cv::Point(5, matched_img.rows - 30), 1, 1, cv::Scalar(0, 255, 0), 2, 0);
+
+  putText(matched_img, "Inliers lines: " + std::to_string(score_lines), cv::Point(5, matched_img.rows - 10), 1, 1, cv::Scalar(0, 255, 0), 2, 0);
 
   if (gt_matrix_.rows > 1)
   {
@@ -1221,8 +1381,19 @@ cv::Mat LCDetector::DrawLineNPtsMatches(
     const std::vector<DMatch> &kls_matches,
     const std::vector<DMatch> &kpts_matches)
 {
+
+ 
   cv::Mat tr_img = v_imgs[train_idx].clone();
   cv::Mat q_img = v_imgs[query_idx].clone();
+
+  if (!(kls_matches.size()>0 && kpts_matches.size()>0))
+  {
+    cv::Mat joined_img;
+     cv::addWeighted(tr_img, 0.5, q_img, 0.5, 0.0,
+                  joined_img, -1);
+
+     return joined_img;
+  }
 
   std::vector<KeyLine> tr_lines = v_kls[train_idx];
   std::vector<KeyLine> q_lines = v_kls[query_idx];
