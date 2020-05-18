@@ -1115,7 +1115,7 @@ const cv::Mat &query,
         continue;
       }
     }
-     if (same_orient_1 && !same_orient_2)
+    if (same_orient_1 && !same_orient_2)
     {
       if (!(matches12[m][0].distance <= matches12[m][1].distance * nndr_bf_lines_))
       {
@@ -1522,6 +1522,141 @@ cv::Mat LCDetector::draw2DLines(const cv::Mat gray_img,
   }
 
   return line_img;
+}
+
+double LCDetector::GlobalRotationImagePair(const std::vector<KeyLine> q_lines, const std::vector<KeyLine> &tr_lines)
+{
+    double TwoPI = 2 * M_PI;
+    double rotationAngle = TwoPI;
+
+    const unsigned int resolution_scale = 20;
+    //step 1: compute the angle histogram of lines in the left and right images
+    const unsigned int dim = 360 / resolution_scale; //number of the bins of histogram
+    unsigned int index;                              //index in the histogram
+    double direction;
+    double scalar = 180 / (resolution_scale * 3.1415927); //used when compute the index
+    double angleShift = (resolution_scale * M_PI) / 360;  //make sure zero is the middle of the interval
+
+    std::array<double, dim> angleHistLeft;
+    std::array<double, dim> angleHistRight;
+    std::array<double, dim> lengthLeft; //lengthLeft[i] store the total line length of all the lines in the ith angle bin.
+    std::array<double, dim> lengthRight;
+    angleHistLeft.fill(0);
+    angleHistRight.fill(0);
+    lengthLeft.fill(0);
+    lengthRight.fill(0);
+
+    for (unsigned int linenum = 0; linenum < q_lines.size(); linenum++)
+    {
+        direction = q_lines[linenum].angle + M_PI + angleShift;
+        direction = direction < TwoPI ? direction : (direction - TwoPI);
+        index = floor(direction * scalar);
+        angleHistLeft[index]++;
+        lengthLeft[index] += q_lines[linenum].lineLength;
+    }
+    for (unsigned int linenum = 0; linenum < tr_lines.size(); linenum++)
+    {
+        direction = tr_lines[linenum].angle + M_PI + angleShift;
+        direction = direction < TwoPI ? direction : (direction - TwoPI);
+        index = floor(direction * scalar);
+        angleHistRight[index]++;
+        lengthRight[index] += tr_lines[linenum].lineLength;
+    }
+    arrayMultiRatio(angleHistLeft.data(), angleHistLeft.size(), (1 / getNormL2(angleHistLeft.data(), angleHistLeft.size())));
+    arrayMultiRatio(angleHistRight.data(), angleHistRight.size(), (1 / getNormL2(angleHistRight.data(), angleHistRight.size())));
+    arrayMultiRatio(lengthLeft.data(), lengthLeft.size(), (1 / getNormL2(lengthLeft.data(), lengthLeft.size())));
+    arrayMultiRatio(lengthRight.data(), lengthRight.size(), (1 / getNormL2(lengthRight.data(), lengthRight.size())));
+
+    //step 2: find shift to decide the approximate global rotation
+    std::array<double, dim> difVec; //the difference vector between left histogram and shifted right histogram
+    double minDif = 10;             //the minimal angle histogram difference
+    double secondMinDif = 10;       //the second minimal histogram difference
+    unsigned int minShift;          //the shift of right angle histogram when minimal difference achieved
+    unsigned int secondMinShift;    //the shift of right angle histogram when second minimal difference achieved
+
+    std::array<double, dim> lengthDifVec; //the length difference vector between left and right
+    double minLenDif = 10;                //the minimal length difference
+    double secondMinLenDif = 10;          //100		  //the second minimal length difference
+    unsigned int minLenShift;             //the shift of right length vector when minimal length difference achieved
+    unsigned int secondMinLenShift;       //the shift of right length vector when the second minimal length difference achieved
+
+    double normOfVec;
+    for (unsigned int shift = 0; shift < dim; shift++)
+    {
+        for (unsigned int j = 0; j < dim; j++)
+        {
+            index = j + shift;
+            index = index < dim ? index : (index - dim);
+            difVec[j] = angleHistLeft[j] - angleHistRight[index];
+            lengthDifVec[j] = lengthLeft[j] - lengthRight[index];
+        }
+        //find the minShift and secondMinShift for angle histogram
+        normOfVec = getNormL2(difVec.data(), difVec.size());
+        if (normOfVec < secondMinDif)
+        {
+            if (normOfVec < minDif)
+            {
+                secondMinDif = minDif;
+                secondMinShift = minShift;
+                minDif = normOfVec;
+                minShift = shift;
+            }
+            else
+            {
+                secondMinDif = normOfVec;
+                secondMinShift = shift;
+            }
+        }
+        //find the minLenShift and secondMinLenShift of length vector
+        normOfVec = getNormL2(lengthDifVec.data(), lengthDifVec.size());
+        if (normOfVec < secondMinLenDif)
+        {
+            if (normOfVec < minLenDif)
+            {
+                secondMinLenDif = minLenDif;
+                secondMinLenShift = minLenShift;
+                minLenDif = normOfVec;
+                minLenShift = shift;
+            }
+            else
+            {
+                secondMinLenDif = normOfVec;
+                secondMinLenShift = shift;
+            }
+        }
+    }
+
+    //first check whether there exist an approximate global rotation angle between image pair
+    float AcceptableAngleHistogramDifference = 0.49;
+    float AcceptableLengthVectorDifference = 0.4;
+    if (minDif < AcceptableAngleHistogramDifference && minLenDif < AcceptableLengthVectorDifference)
+    {
+        rotationAngle = minShift * resolution_scale;
+        if (rotationAngle > 90 && 360 - rotationAngle > 90)
+        {
+            //In most case we believe the rotation angle between two image pairs should belong to [-Pi/2, Pi/2]
+            rotationAngle = rotationAngle - 180;
+        }
+        rotationAngle = rotationAngle * M_PI / 180;
+    }
+    return rotationAngle;
+}
+
+double LCDetector::getNormL2(double *arr, int size)
+{
+    double result = 0;
+    for (int i = 0; i < size; i++)
+    {
+        result = result + arr[i] * arr[i];
+    }
+    return sqrt(result);
+}
+void LCDetector::arrayMultiRatio(double *arr, int size, double ratio)
+{
+    for (int i = 0; i < size; i++)
+    {
+        arr[i] = arr[i] * ratio;
+    }
 }
 
 } // namespace ibow_lcd

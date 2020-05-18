@@ -363,7 +363,7 @@ void GeomConstr::FilterOrientMatches(const std::vector<KeyLine> q_lines,
 {
     //Compute line orientation change between pair lines of the two frames
     // double global_angle = GlobalRotationImagePair(q_lines, tr_lines);
-double global_angle = 0.0;
+    double global_angle = 0.0;
     // std::cerr << "global_angle : " << global_angle << std::endl
             //   << std::endl;
 

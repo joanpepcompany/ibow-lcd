@@ -334,6 +334,9 @@ private:
                      std::vector<cv::Point2f> *query,
                      std::vector<cv::Point2f> *train);
 
+  double GlobalRotationImagePair(const std::vector<KeyLine> q_lines, const std::vector<KeyLine> &tr_lines);
+  double getNormL2(double *arr, int size);
+  void arrayMultiRatio(double *arr, int size, double ratio);
 };
 
 } // namespace ibow_lcd

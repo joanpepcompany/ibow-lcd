@@ -74,6 +74,7 @@ struct IntersectPt
 class GeomConstr
 {
 public:
+    GeomConstr();
     GeomConstr(const cv::Mat &q_img,
                const cv::Mat &t_img,
                const std::vector<cv::KeyPoint> &q_kps,
