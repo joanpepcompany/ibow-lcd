@@ -68,6 +68,8 @@ LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0
   num_incorrect_match = 0;
   num_not_found_match = 0;
 
+  logos_params_ = params.logos_params;
+
   boost::filesystem::path wrong_matches_fold = params.output_path + std::string("/WrongMatches");
   wrong_matches_path_ = params.output_path + std::string("/WrongMatches/");
   boost::filesystem::remove_all(wrong_matches_fold);
@@ -353,8 +355,33 @@ void LCDetector::SearchVocCand(const cv::Mat & descs, std::vector<obindex2::Imag
     std::vector<obindex2::ImageMatch> image_matches;
     index_->searchImages(descs, matches, &image_matches, true);
 
+    std::cerr << "image_matches.size() : " << image_matches.size() << std::endl;
+
     // Filtering the resulting image matchings
     filterCandidates(image_matches, &image_matches_filt);
+    std::cerr << "image_matches_filt.size() : " << image_matches_filt.size() << std::endl;
+
+}
+
+void LCDetector::SearchVocCandLines(const cv::Mat & descs, std::vector<obindex2::ImageMatch> &image_matches_filt)
+{
+   // Searching similar images in the index
+    // Matching the descriptors agains the current visual words
+    std::vector<std::vector<cv::DMatch>> matches_feats;
+    // Searching the query descriptors against the features
+    index_l_->searchDescriptors(descs, &matches_feats, 2, 64);
+    // Filtering matches according to the ratio test
+    std::vector<cv::DMatch> matches;
+    filterMatches(matches_feats, &matches);
+    std::vector<obindex2::ImageMatch> image_matches;
+    index_l_->searchImages(descs, matches, &image_matches, true);
+
+    std::cerr << "image_matches.size() : " << image_matches.size() << std::endl;
+
+    // Filtering the resulting image matchings
+    filterCandidates(image_matches, &image_matches_filt);
+    std::cerr << "image_matches_filt.size() : " << image_matches_filt.size() << std::endl;
+
 }
 
 // Debug IboW function adapted to Multiple Features with custom geometric constraints
@@ -366,7 +393,7 @@ void LCDetector::debug(const unsigned image_id,
                        const cv::Mat &descs_l,
                        std::ofstream &out_file)
 {
-  bool b_multi_thread = true;
+  bool b_multi_thread = false;
   // std::vector<cv::KeyPoint> kps_l;
   auto start = std::chrono::steady_clock::now();
   // Storing the keypoints and descriptors
@@ -460,7 +487,7 @@ void LCDetector::debug(const unsigned image_id,
   std::vector<obindex2::ImageMatch> image_matches_filt_l;
    if (!b_multi_thread)
   {
-    SearchVocCand(descs_l, image_matches_filt_l);
+    SearchVocCandLines(descs_l, image_matches_filt_l);
   }
     auto diff_search_voc_sthreat_l = std::chrono::steady_clock::now() - st_search_voc_sthreat_l;
   double search_voc_sthreat_l = std::chrono::duration<double, std::milli>(diff_search_voc_sthreat_l).count();
@@ -472,7 +499,7 @@ void LCDetector::debug(const unsigned image_id,
   {
     auto voc_cand_pts = std::async(std::launch::async, &LCDetector::SearchVocCand, this, std::ref(descs), std::ref(image_matches_filt));
 
-    auto voc_cand_l = std::async(std::launch::async, &LCDetector::SearchVocCand, this,  std::ref(descs_l), std::ref(image_matches_filt_l));
+    auto voc_cand_l = std::async(std::launch::async, &LCDetector::SearchVocCandLines, this,  std::ref(descs_l), std::ref(image_matches_filt_l));
 
     voc_cand_pts.wait();
     voc_cand_l.wait();
@@ -482,6 +509,46 @@ void LCDetector::debug(const unsigned image_id,
   double search_voc_mthreat = std::chrono::duration<double, std::milli>(diff_search_voc_mthreat).count();
 
   v_time_search_voc_multithreat_.push_back(search_voc_mthreat);
+
+// TODO: Late Fusion
+  std::ofstream output_file;
+  cv::FileStorage opencv_file("../results/scores/" + std::to_string(image_id)+ ".yaml", cv::FileStorage::WRITE);
+  cv::Mat v_pts_score;
+  for (size_t i = 0; i < image_matches_filt.size(); i++)
+  {
+    v_pts_score.push_back(image_matches_filt[i].score);
+  }
+  cv::Mat v_lines_score;
+  for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+  {
+    v_lines_score.push_back(image_matches_filt_l[i].score);
+  }
+ 
+  opencv_file << "pts_score" << v_pts_score;
+  opencv_file << "lines_score" << v_lines_score;
+
+  cv::Mat found_gt = (Mat_<bool>(1,1) << false);
+  if(gt_matrix_.rows > 1)
+  {
+    cv::Mat gt_row = gt_matrix_.row(image_id);
+    double min, max;
+    cv::minMaxLoc(gt_row, &min, &max);
+
+    if (max > 0)
+      found_gt = (Mat_<bool>(1, 1) << true);
+  }
+ 
+
+  opencv_file << "is_LC" << found_gt;
+  opencv_file.release();
+  
+  // std::cerr << std::endl;
+  // std::cerr << " << Press enter to continue" << std::endl;
+  // std::cin.get();
+
+// END TODO: Late Fusion
+
+  
 
 
   // TODO: END TIME
@@ -652,8 +719,10 @@ void LCDetector::debug(const unsigned image_id,
 
   std::vector<cv::Point2f> tquery;
   std::vector<cv::Point2f> ttrain;
-
-  unsigned inliers;
+  bool use_ransac = true;
+  bool use_logos = false;
+  bool use_gms = false;
+  unsigned inliers = 0;
   int pts_inliers = 0;
   int line_inliers= 0 ;
   if ((descs.cols == 0 || prev_descs_[best_img].cols == 0) &&
@@ -663,7 +732,7 @@ void LCDetector::debug(const unsigned image_id,
     inliers = 0;
   }
 
-  else
+  else if(use_ransac)
   {
     //TODO: start spatial verification time
 
@@ -679,13 +748,6 @@ void LCDetector::debug(const unsigned image_id,
       ratioMatchingBFLNoGeom(descs_l, prev_descs_l_[best_img], &tmatches_l);
 
     //----
-    int pt_matches = tmatches.size();
-    int l_matches = tmatches_l.size();
-    double inl_ratio_pt = max(100.0 * pt_matches / descs.cols, 100.0 * pt_matches / prev_descs_[best_img].cols);
-    double inl_ratio_ls = max(100.0 * l_matches / descs_l.cols, 100.0 * l_matches / prev_descs_l_[best_img].cols);
-    bool eval_geom_const = false;
-    //  if( inl_ratio_pt > 30 || inl_ratio_ls > 30)
-    //  {
     std::unique_ptr<GeomConstr> geomConstraints(std::unique_ptr<GeomConstr>(new GeomConstr(v_images[image_id], v_images[best_img], kps, prev_kps_[best_img], descs, prev_descs_[best_img], tmatches, kls, prev_kls_[best_img], descs_l, prev_descs_l_[best_img], tmatches_l, geom_params_)));
 
     pts_inliers = geomConstraints->getPtsInliers();
@@ -697,9 +759,128 @@ void LCDetector::debug(const unsigned image_id,
     v_time_spatial_ver_.push_back(time_spatial_ver);
     v_line_inliers_.push_back(double(line_inliers));
     //TODO: spatial verification time
-    //  }
 
     //  else inliers= 0;
+  }
+
+  else if (use_gms)
+  {
+    auto st_time_spatial_ver = std::chrono::steady_clock::now();
+    
+    BFMatcher matcher(NORM_HAMMING);
+    matcher.match(descs,  prev_descs_[best_img], tmatches);
+    MatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
+    std::vector<cv::KeyPoint> kpts_kl1;
+    std::vector<cv::KeyPoint> kpts_kl2;
+    std::vector<cv::DMatch> kls_f_matches;
+    PtsNLineComb(kls, prev_kls_[best_img], tmatches_l, tmatches.size(),
+                 kpts_kl1, kpts_kl2, kls_f_matches);
+
+
+    // cv::Mat prev_match_line_img;
+    // prev_match_line_img = DrawMatches(kls, prev_kls_[best_img], v_images[image_id], v_images[best_img], tmatches_l);
+    // cv::imshow("Output prev to GMS line matches", prev_match_line_img);
+
+    std::vector<cv::KeyPoint> comb_kpts1 = kps;
+    std::vector<cv::KeyPoint> comb_kpts2 = prev_kps_[best_img];
+    comb_kpts1.insert(comb_kpts1.end(), kpts_kl1.begin(), kpts_kl1.end());
+    comb_kpts2.insert(comb_kpts2.end(), kpts_kl2.begin(), kpts_kl2.end());
+    std::vector<cv::DMatch> comb_matches = tmatches;
+    comb_matches.insert(comb_matches.end(), kls_f_matches.begin(), kls_f_matches.end());
+
+    std::vector<bool> vbInliers;
+    gms_matcher gms(comb_kpts1, v_images[image_id].size(), comb_kpts2, v_images[best_img].size(), comb_matches);
+    // std::cerr << "Debug comb_matches size" << comb_matches.size() << std::endl;
+
+    int num_inliers = gms.GetInlierMask(vbInliers, false, false);
+    // cout << "Get total " << num_inliers << " matches." << endl;
+
+    std::vector<cv::DMatch> matches_gms_kpts;
+    std::vector<cv::DMatch> matches_gms_kls;
+
+    for (size_t i = 0; i < vbInliers.size(); ++i)
+    {
+      if (vbInliers[i] == true)
+      {
+        if (i < tmatches.size())
+        {
+          matches_gms_kpts.push_back(comb_matches[i]);
+        }
+
+        else
+        {
+          matches_gms_kls.push_back(comb_matches[i]);
+        }
+      }
+    }
+
+    std::vector<cv::DMatch> filt_l_gms_matches;
+    match2LineConv(matches_gms_kls, tmatches_l, tmatches.size(), filt_l_gms_matches);
+
+    // std::cerr << "Number of GMS point matches: " << matches_gms_kpts.size() << " / Number of GMS line matches: " << filt_l_gms_matches.size() << std::endl;
+
+    // cv::Mat match_line_img;
+    // match_line_img = DrawMatches(kls, prev_kls_[best_img], v_images[image_id], v_images[best_img], filt_l_gms_matches);
+
+    // cv::imshow("Output line matches", match_line_img);
+    // waitKey(0);
+    pts_inliers = matches_gms_kpts.size();
+    line_inliers = filt_l_gms_matches.size();
+    inliers = pts_inliers + line_inliers;
+
+    tmatches = matches_gms_kpts;
+    tmatches_l = filt_l_gms_matches;
+
+    auto diff_time_spatial_ver = std::chrono::steady_clock::now() - st_time_spatial_ver;
+    double time_spatial_ver = std::chrono::duration<double, std::milli>(diff_time_spatial_ver).count();
+
+    v_time_spatial_ver_.push_back(time_spatial_ver);
+    v_line_inliers_.push_back(double(line_inliers));
+
+  }
+
+  else if (use_logos)
+  {
+     auto st_time_spatial_ver = std::chrono::steady_clock::now();
+
+    Logos *logos = new Logos(&logos_params_);
+
+    if (descs.rows > 0 && prev_descs_[best_img].rows > 0)
+     ratioMatchingBF(descs, prev_descs_[best_img], &tmatches);
+    // Match Keypoints using BF
+    if (descs_l.rows > 0 && prev_descs_l_[best_img].rows > 0)
+      logos->MatchingBF(descs_l, prev_descs_l_[best_img], &tmatches_l);
+
+    // FIXME: Evaluate if point macthing vector > 0
+    std::vector<Pt *> l_pts_1;
+    std::vector<Pt *> l_pts_2;
+    logos->KptsNLines2PtConv(kps,prev_kps_[best_img] , tmatches,
+                             kls, prev_kls_[best_img], tmatches_l,
+                             l_pts_1, l_pts_2);
+    //Extract matches from LOGOS
+    std::vector<cv::DMatch> comb_pt_matches;
+    logos->Process(l_pts_1, l_pts_2, comb_pt_matches);
+
+    l_pts_1.clear();
+    l_pts_2.clear();
+    // Logos to point and line matching conversion
+    std::vector<cv::DMatch> kp_pt_matches;
+    std::vector<cv::DMatch> line_matches;
+    logos->getKptsNLineMatches(comb_pt_matches, tmatches, tmatches_l, kp_pt_matches, line_matches);
+
+    tmatches = kp_pt_matches;
+    tmatches_l = line_matches;
+
+    pts_inliers = kp_pt_matches.size();
+    line_inliers = line_matches.size();
+    inliers = pts_inliers + line_inliers;
+
+    // std::cerr << "pts_inliers : " << pts_inliers << " line_inliers : " << line_inliers << std::endl;
+    auto diff_time_spatial_ver = std::chrono::steady_clock::now() - st_time_spatial_ver;
+    double time_spatial_ver = std::chrono::duration<double, std::milli>(diff_time_spatial_ver).count();
+
+    v_time_spatial_ver_.push_back(time_spatial_ver);
+    v_line_inliers_.push_back(double(line_inliers));
   }
 
   if( inliers < min_inliers_)
@@ -751,7 +932,7 @@ void LCDetector::debug(const unsigned image_id,
   if (b_wait)
     cv::waitKey(0);
   else if (display_time != 0)
-    cv::waitKey(10);
+    cv::waitKey(0);
 
   auto end = std::chrono::steady_clock::now();
   auto diff = end - start;
@@ -910,7 +1091,7 @@ void LCDetector::filterCandidates(
 
   double max_score = image_matches[0].score;
   double min_score = image_matches[image_matches.size() - 1].score;
-
+  if(image_matches.size()>1)
   for (unsigned i = 0; i < image_matches.size(); i++)
   {
     // Computing the new score
@@ -1031,6 +1212,27 @@ unsigned LCDetector::checkEpipolarGeometry(
   }
 
   return total_inliers;
+}
+
+void LCDetector::MatchingBF(const cv::Mat &query,
+				const cv::Mat &train,
+				std::vector<cv::DMatch> *matches)
+{
+	matches->clear();
+	cv::BFMatcher matcher(cv::NORM_HAMMING);
+
+	// Matching descriptors
+	std::vector<std::vector<cv::DMatch>> matches12;
+	matcher.knnMatch(query, train, matches12, 2);
+
+	// Filtering the resulting matchings according to the given ratio
+	for (unsigned m = 0; m < matches12.size(); m++)
+	{
+		matches->push_back(matches12[m][0]);
+		// TODO: evaluate if it is necessary to use the second most similar match
+		matches->push_back(matches12[m][1]);
+		//     }
+	}
 }
 
 void LCDetector::ratioMatchingBF(const cv::Mat &query,
@@ -1657,6 +1859,164 @@ void LCDetector::arrayMultiRatio(double *arr, int size, double ratio)
     {
         arr[i] = arr[i] * ratio;
     }
+}
+
+void LCDetector::PtsNLineComb(const std::vector<KeyLine> &p_kls,
+				  const std::vector<KeyLine> &c_kls,
+				  const std::vector<cv::DMatch> &matches,
+				  const int &kpts_size,
+				  std::vector<cv::KeyPoint> &p_kpts,
+				  std::vector<cv::KeyPoint> &c_kpts,
+				  std::vector<cv::DMatch> &out_matches)
+{
+	int idx_matches = kpts_size;
+
+	for (size_t i = 0; i < matches.size(); i++)
+	{
+		// Get correspondence Matched Lines
+		KeyLine q_line = p_kls[matches[i].queryIdx];
+		KeyLine tr_line = c_kls[matches[i].trainIdx];
+
+		//Fill the current an previous Kpts with the lines information
+		cv::KeyPoint p_kpt_st;
+		p_kpt_st.angle = q_line.angle;
+		p_kpt_st.size = q_line.lineLength; 
+		p_kpt_st.pt = q_line.getStartPoint();
+
+		cv::KeyPoint c_kpt_st;
+		c_kpt_st.angle = tr_line.angle;
+		c_kpt_st.size = tr_line.lineLength; 
+		c_kpt_st.pt = tr_line.getStartPoint();
+
+		cv::KeyPoint p_kpt_end;
+		p_kpt_end.angle = q_line.angle;
+		p_kpt_end.size = q_line.lineLength;
+		p_kpt_end.pt = q_line.getEndPoint();
+
+		cv::KeyPoint c_kpt_end;
+		c_kpt_end.angle = tr_line.angle;
+		c_kpt_end.size = tr_line.lineLength;
+		c_kpt_end.pt = tr_line.getEndPoint();
+
+		//Add the kpts to the corresp. vector
+		p_kpts.push_back(p_kpt_st);
+		p_kpts.push_back(p_kpt_end);
+
+		c_kpts.push_back(c_kpt_st);
+		c_kpts.push_back(c_kpt_end);
+
+		//Add matches 1:(prev_pt_st -> curr_pt_st), 2:(prev_pt_st -> curr_pt_end)
+		//TODO: add idx_offset when combine with points
+		cv::DMatch s_match1(idx_matches, idx_matches, matches[i].distance);
+		out_matches.push_back(s_match1);
+
+		cv::DMatch s_match2(idx_matches, idx_matches + 1, matches[i].distance);
+		out_matches.push_back(s_match2);
+
+		//Add matches 3:(prev_pt_end -> curr_pt_end), 4:(prev_pt_end -> curr_pt_st)
+
+		cv::DMatch s_match3(idx_matches + 1, idx_matches + 1, matches[i].distance);
+		out_matches.push_back(s_match3);
+
+		cv::DMatch s_match4(idx_matches + 1, idx_matches, matches[i].distance);
+		out_matches.push_back(s_match4);
+
+		idx_matches += 2;
+	}
+}
+
+void LCDetector::match2LineConv(const std::vector<cv::DMatch> &gms_matches,
+                                const std::vector<cv::DMatch> &bf_matches,
+                                const int &kpts_size,
+                                std::vector<cv::DMatch> &l_matches)
+{	
+	std::vector<int> found_match_l(bf_matches.size(), 0);
+	for (size_t i = 0; i < gms_matches.size(); i++)
+	{
+		int idx = gms_matches[i].trainIdx - kpts_size;
+		found_match_l[(int)idx / 2]++;		
+	}
+
+		for (size_t i = 0; i < found_match_l.size(); i++)
+	{
+		if (found_match_l[i] > 0)
+		{
+			l_matches.push_back(bf_matches[i]);
+		}
+	}
+	
+}
+
+cv::Mat LCDetector::DrawMatches(const std::vector<KeyLine> &linesInRight, const std::vector<KeyLine> &linesInLeft,const cv::Mat &r_image, const cv::Mat &l_image, const std::vector<DMatch> &matchResult)
+{
+    cv::Mat rightColorImage = r_image.clone();
+    cv::Mat leftColorImage = l_image.clone();
+    // cv::Mat leftColorImage, rightColorImage;
+    // cvtColor(trainGrayImage, leftColorImage, cv::COLOR_GRAY2RGB);
+    // cvtColor(queryGrayImage, rightColorImage, cv::COLOR_GRAY2RGB);
+    unsigned int imageWidth = leftColorImage.cols;
+    unsigned int imageHeight = leftColorImage.rows;
+    double ww1, ww2;
+    int lineIDLeft;
+    int lineIDRight;
+    int lowest1 = 0, highest1 = 255;
+    int range1 = (highest1 - lowest1) + 1;
+    std::vector<unsigned int> r1(matchResult.size()), g1(matchResult.size()), b1(matchResult.size()); //the color of lines
+    for (unsigned int pair = 0; pair < matchResult.size(); pair++)
+    {
+        r1[pair] = lowest1 + int(rand() % range1);
+        g1[pair] = lowest1 + int(rand() % range1);
+        b1[pair] = 255 - r1[pair];
+        ww1 = 0.2 * (rand() % 5);
+        ww2 = 1 - ww1;
+        char buf[10];
+        sprintf(buf, "%d ", pair);
+        if(matchResult[pair].trainIdx < 0 || matchResult[pair].queryIdx < 0)
+            continue;
+        
+        lineIDLeft = matchResult[pair].trainIdx;
+
+        lineIDRight = matchResult[pair].queryIdx;
+
+        cv::Point startPointL = cv::Point(int(linesInLeft[lineIDLeft].startPointX), int(linesInLeft[lineIDLeft].startPointY));
+        cv::Point endPointL = cv::Point(int(linesInLeft[lineIDLeft].endPointX), int(linesInLeft[lineIDLeft].endPointY));
+        cv::line(leftColorImage, startPointL, endPointL, CV_RGB(r1[pair], g1[pair], b1[pair]), 4, cv::LINE_AA, 0);
+
+        cv::putText(leftColorImage, std::to_string(lineIDLeft), cv::Point(startPointL.x, startPointL.y + 10), 1, 1, Scalar(255, 0, 0), 2, 0);
+
+        cv::Point startPointR = cvPoint(int(linesInRight[lineIDRight].startPointX), int(linesInRight[lineIDRight].startPointY));
+
+        cv::Point endPointR = cvPoint(int(linesInRight[lineIDRight].endPointX), int(linesInRight[lineIDRight].endPointY));
+
+        cv::line(rightColorImage, startPointR, endPointR, CV_RGB(r1[pair], g1[pair], b1[pair]), 4, cv::LINE_AA, 0);
+        cv::putText(rightColorImage, std::to_string(lineIDRight), cv::Point(startPointR.x, startPointR.y + 10), 1, 1, Scalar(255, 0, 0), 2, 0);
+    }
+    
+    cv::Mat cvResultColorImage1 = cv::Mat(cv::Size(imageWidth * 2, imageHeight), leftColorImage.type(), 3);
+    cv::Mat cvResultColorImage2 = cv::Mat(cv::Size(imageWidth * 2, imageHeight), leftColorImage.type(), 3);
+    cv::Mat cvResultColorImage = cv::Mat(cv::Size(imageWidth * 2, imageHeight), leftColorImage.type(), 3);
+    cv::Mat roi = cvResultColorImage1(cv::Rect(0, 0, imageWidth, imageHeight));
+    cv::resize(leftColorImage, roi, roi.size(), 0, 0, 0);
+
+    cv::Mat roi2 = cvResultColorImage1(cv::Rect(imageWidth, 0, imageWidth, imageHeight));
+    cv::resize(rightColorImage, roi2, roi2.size(), 0, 0, 0);
+    cvResultColorImage1.copyTo(cvResultColorImage2);
+
+    for (unsigned int pair = 0; pair < matchResult.size(); pair++)
+    {
+        if(matchResult[pair].trainIdx < 0 || matchResult[pair].queryIdx < 0)
+            continue;
+        lineIDLeft = matchResult[pair].trainIdx;
+        lineIDRight = matchResult[pair].queryIdx;
+        cv::Point startPoint = cv::Point(int(linesInLeft[lineIDLeft].startPointX), int(linesInLeft[lineIDLeft].startPointY));
+        cv::Point endPoint = cv::Point(int(linesInRight[lineIDRight].startPointX + imageWidth), int(linesInRight[lineIDRight].startPointY));
+        cv::line(cvResultColorImage2, startPoint, endPoint, CV_RGB(r1[pair], g1[pair], b1[pair]), 1, cv::LINE_AA, 0);
+    }
+    cv::addWeighted(cvResultColorImage1, 0.5, cvResultColorImage2, 0.5, 0.0, cvResultColorImage, -1);
+
+    float scale = 1.4;
+    cv::resize(cvResultColorImage, cvResultColorImage, cv::Size(2 * imageWidth * scale, imageHeight * scale));
+    return cvResultColorImage;
 }
 
 } // namespace ibow_lcd

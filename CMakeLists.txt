@@ -51,11 +51,18 @@ include_directories(include
                     ${OpenCV_INCLUDE_DIRS}
                     ${Boost_INCLUDE_DIRS}
                     ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/include
+                    ${PROJECT_SOURCE_DIR}/thirdparty/LOGOS/src
+                    ${PROJECT_SOURCE_DIR}/thirdparty/GMS-Feature-Matcher/include
                     )
 
 add_subdirectory( ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib)
 
 list(APPEND OBINDEX_LIBS  ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/build/libobindex2.a)
+
+list(APPEND MATCHING_LIBS  
+${PROJECT_SOURCE_DIR}/thirdparty/LOGOS/build/libLOGOS.a 
+${PROJECT_SOURCE_DIR}/thirdparty/GMS-Feature-Matcher/build/libgms_match.a 
+)
 # Copy test images to the binary directory
 file(GLOB JSON "evaluation/*.json")
 file(COPY ${JSON}
@@ -82,6 +89,7 @@ target_link_libraries(demo
                       ${OpenCV_LIBRARIES}
                       ${Boost_LIBRARIES}
                       ${OBINDEX_LIBS}
+                      ${MATCHING_LIBS}
                       )
 
 # Evaluation
@@ -93,4 +101,5 @@ target_link_libraries(evaluator
                       ${OpenCV_LIBRARIES}
                       ${Boost_LIBRARIES}
                       ${OBINDEX_LIBS}
+                      ${MATCHING_LIBS}
                       )

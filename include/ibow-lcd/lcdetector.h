@@ -34,6 +34,8 @@
 #include "ibow-lcd/island.h"
 #include "ibow-lcd/geometricconstraints.h"
 #include "obindex2/binary_index.h"
+#include "Logos.h"
+#include "gms_matcher.h"
 
 #include <future>
 #include <thread>
@@ -107,6 +109,8 @@ struct LCDetectorParams
   bool debug_loops;
 
   std::string output_path;
+
+  LogosParameters logos_params;
 };
 
 // LCDetectorStatus
@@ -185,6 +189,8 @@ public:
 const std::vector<cv::line_descriptor::KeyLine> &train_kls, const DMatch &match);
 
   void SearchVocCand(const cv::Mat & descs, std::vector<obindex2::ImageMatch> &image_matches_filt);
+
+  void SearchVocCandLines(const cv::Mat & descs, std::vector<obindex2::ImageMatch> &image_matches_filt);
 
 cv::Mat DrawLineNPtsMatches(
     std::vector<cv::Mat> v_imgs,
@@ -273,6 +279,9 @@ private:
   std::vector<std::vector<cv::line_descriptor::KeyLine>> prev_kls_;
   std::vector<cv::Mat> prev_descs_l_;
 
+  //LOGOS Parameters
+  LogosParameters logos_params_;
+
   void addImage(const unsigned image_id,
                 const std::vector<cv::KeyPoint> &kps,
                 const cv::Mat &descs);
@@ -310,6 +319,10 @@ private:
                        const cv::Mat &train,
                        std::vector<cv::DMatch> *matches);
 
+  void MatchingBF(const cv::Mat &query,
+                  const cv::Mat &train,
+                  std::vector<cv::DMatch> *matches);
+
   void ratioMatchingBFLines(
       const std::vector<cv::line_descriptor::KeyLine> &query_kls,
       const std::vector<cv::line_descriptor::KeyLine> &train_kls,
@@ -337,6 +350,20 @@ private:
   double GlobalRotationImagePair(const std::vector<KeyLine> q_lines, const std::vector<KeyLine> &tr_lines);
   double getNormL2(double *arr, int size);
   void arrayMultiRatio(double *arr, int size, double ratio);
+
+  void PtsNLineComb(const std::vector<KeyLine> &p_kls,
+                    const std::vector<KeyLine> &c_kls,
+                    const std::vector<cv::DMatch> &matches,
+                    const int &kpts_size,
+                    std::vector<cv::KeyPoint> &p_kpts,
+                    std::vector<cv::KeyPoint> &c_kpts,
+                    std::vector<cv::DMatch> &out_matches);
+
+  void match2LineConv(const std::vector<cv::DMatch> &gms_matches,
+                      const std::vector<cv::DMatch> &bf_matches,
+                      const int &kpts_size, std::vector<cv::DMatch> &l_matches);
+
+  cv::Mat DrawMatches(const std::vector<KeyLine> &linesInRight, const std::vector<KeyLine> &linesInLeft, const cv::Mat &r_image, const cv::Mat &l_image, const std::vector<DMatch> &matchResult);
 };
 
 } // namespace ibow_lcd
