@@ -35,6 +35,7 @@
 #include "ibow-lcd/geometricconstraints.h"
 #include "obindex2/binary_index.h"
 #include "Logos.h"
+#include "lpm.h"
 #include "gms_matcher.h"
 
 #include <future>
@@ -111,6 +112,7 @@ struct LCDetectorParams
   std::string output_path;
 
   LogosParameters logos_params;
+  LPMParams lpm_params;
 };
 
 // LCDetectorStatus
@@ -214,6 +216,13 @@ cv::Mat DrawLineNPtsMatches(
     return output_mat_;
   }
 
+  bool ScoreCompQueryAdapt(const cv::Mat &v_pts_score,
+                           const cv::Mat &v_lines_score,
+                           std::vector<float> &v_scores);
+
+  float computeIntegral(const cv::Mat &v_pts_score);
+
+
   std::vector<double> v_time_upd_voc_sthreat_pts_;
   std::vector<double> v_time_upd_voc_sthreat_l_;
   std::vector<double> v_time_upd_voc_multithreat_;
@@ -281,6 +290,7 @@ private:
 
   //LOGOS Parameters
   LogosParameters logos_params_;
+  LPMParams lpm_params_;
 
   void addImage(const unsigned image_id,
                 const std::vector<cv::KeyPoint> &kps,

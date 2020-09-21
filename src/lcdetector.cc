@@ -69,6 +69,7 @@ LCDetector::LCDetector(const LCDetectorParams &params) : last_lc_island_(-1, 0.0
   num_not_found_match = 0;
 
   logos_params_ = params.logos_params;
+  lpm_params_ = params.lpm_params;
 
   boost::filesystem::path wrong_matches_fold = params.output_path + std::string("/WrongMatches");
   wrong_matches_path_ = params.output_path + std::string("/WrongMatches/");
@@ -510,16 +511,24 @@ void LCDetector::debug(const unsigned image_id,
 
   v_time_search_voc_multithreat_.push_back(search_voc_mthreat);
 
-// TODO: Late Fusion
+  // TODO: Remove after --> Late Fusion score canditates evaluation
   std::ofstream output_file;
   cv::FileStorage opencv_file("../results/scores/" + std::to_string(image_id)+ ".yaml", cv::FileStorage::WRITE);
   cv::Mat v_pts_score;
-  for (size_t i = 0; i < image_matches_filt.size(); i++)
+  int max_size_list = 25;
+  int max_pts_size_list = max_size_list;
+  if(image_matches_filt.size() < max_size_list)
+    max_pts_size_list = image_matches_filt.size();
+  for (size_t i = 0; i < max_pts_size_list; i++)
   {
     v_pts_score.push_back(image_matches_filt[i].score);
   }
+
+  int max_lines_size_list = max_size_list;
+  if (image_matches_filt_l.size() < max_size_list)
+    max_lines_size_list = image_matches_filt_l.size();
   cv::Mat v_lines_score;
-  for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+  for (size_t i = 0; i < max_lines_size_list; i++)
   {
     v_lines_score.push_back(image_matches_filt_l[i].score);
   }
@@ -537,44 +546,72 @@ void LCDetector::debug(const unsigned image_id,
     if (max > 0)
       found_gt = (Mat_<bool>(1, 1) << true);
   }
- 
-
   opencv_file << "is_LC" << found_gt;
   opencv_file.release();
   
-  // std::cerr << std::endl;
-  // std::cerr << " << Press enter to continue" << std::endl;
-  // std::cin.get();
-
-// END TODO: Late Fusion
-
-  
+  // END TODO: Remove after --> Late Fusion
 
 
   // TODO: END TIME
   //  FUSE CANDIDATES OF Visual Vocabulary
   // Borda Count
+  bool borda_count = true;
   auto st_time_merge = std::chrono::steady_clock::now();
 
-  int min_num_matches = image_matches_filt_l.size();
-  if (image_matches_filt.size() < image_matches_filt_l.size())
+  if (borda_count)
   {
-    min_num_matches = image_matches_filt.size();
-  }
-  // if(min_num_matches > 5)
-  //   min_num_matches = 5;
+    int min_num_matches = image_matches_filt_l.size();
+    if (image_matches_filt.size() < image_matches_filt_l.size())
+    {
+      min_num_matches = image_matches_filt.size();
+    }
 
-  int score = min_num_matches;
-  for (size_t i = 0; i < min_num_matches; i++)
+    int score = min_num_matches;
+    for (size_t i = 0; i < min_num_matches; i++)
+    {
+      image_matches_filt_l[i].score = score * image_matches_filt_l[i].score;
+      image_matches_filt[i].score = score * image_matches_filt[i].score;
+
+      score--;
+    }
+  }
+  else
   {
-    image_matches_filt_l[i].score = score * image_matches_filt_l[i].score ;
-    image_matches_filt[i].score = score * image_matches_filt[i].score;
+    std::vector<float> scores_pts_n_lines;
+    if(ScoreCompQueryAdapt(v_pts_score, v_lines_score, scores_pts_n_lines))
+    {
+      for (size_t i = 0; i < image_matches_filt.size(); i++)
+      {
+        image_matches_filt[i].score = scores_pts_n_lines[0] * image_matches_filt[i].score;
+      }
 
-    score--;
+      for (size_t i = 0; i < image_matches_filt_l.size(); i++)
+      {
+        image_matches_filt_l[i].score = scores_pts_n_lines[1] * image_matches_filt_l[i].score;
+      }
+      
+      std::cerr << "pts_score : " << scores_pts_n_lines[0] << " / lines_score : " << scores_pts_n_lines[1] << std::endl;
+    }
+    else
+    {
+      // No resulting islands
+      auto end = std::chrono::steady_clock::now();
+      auto diff = end - start;
+      out_file << 0 << "\t";                                                       // min_id
+      out_file << 0 << "\t";                                                       // max_id
+      out_file << 0 << "\t";                                                       // img_id
+      out_file << 0 << "\t";                                                       // overlap
+      out_file << 0 << "\t";                                                       // Inliers
+      out_file << index_->numDescriptors() + index_l_->numDescriptors() << "\t";   // Voc. Size
+      out_file << std::chrono::duration<double, std::milli>(diff).count() << "\t"; // Time
+      out_file << std::endl;
+      return;
+    }    
   }
+
+  //Multiply those that share the same match
   std::vector<obindex2::ImageMatch> image_matches_to_concat;
 
-  //Sum those that share the same match
   for (size_t i = 0; i < image_matches_filt_l.size(); i++)
   {
     bool found = false;
@@ -582,14 +619,15 @@ void LCDetector::debug(const unsigned image_id,
     {
       if (image_matches_filt_l.at(i).image_id == image_matches_filt.at(j).image_id)
       {
-        image_matches_filt.at(j).score =  sqrt (image_matches_filt.at(j).score  * image_matches_filt_l.at(i).score);
+        image_matches_filt.at(j).score = (image_matches_filt.at(j).score  + image_matches_filt_l.at(i).score);
         found = true;
         break;
       }
     }
     if (!found)
     {
-      image_matches_filt_l.at(i).score =  image_matches_filt_l.at(i).score*0.5;
+      // TODO: removed 0.5
+      // image_matches_filt_l.at(i).score =  image_matches_filt_l.at(i).score*0.5;
       image_matches_to_concat.push_back(image_matches_filt_l.at(i));
     }
   }
@@ -606,10 +644,11 @@ void LCDetector::debug(const unsigned image_id,
         break;
       }
     }
-    if (!found)
-    {
-      image_matches_filt.at(i).score =  image_matches_filt.at(i).score * 0.5;
-    }
+    // if (!found)
+    // {
+    //   // TODO: removed *0.5
+    //   image_matches_filt.at(i).score =  image_matches_filt.at(i).score * 0.5;
+    // }
   }
 
   image_matches_filt.insert(image_matches_filt.end(), image_matches_to_concat.begin(), image_matches_to_concat.end());
@@ -722,6 +761,7 @@ void LCDetector::debug(const unsigned image_id,
   bool use_ransac = true;
   bool use_logos = false;
   bool use_gms = false;
+  bool use_lpm = false;
   unsigned inliers = 0;
   int pts_inliers = 0;
   int line_inliers= 0 ;
@@ -841,7 +881,7 @@ void LCDetector::debug(const unsigned image_id,
 
   else if (use_logos)
   {
-     auto st_time_spatial_ver = std::chrono::steady_clock::now();
+    auto st_time_spatial_ver = std::chrono::steady_clock::now();
 
     Logos *logos = new Logos(&logos_params_);
 
@@ -881,6 +921,24 @@ void LCDetector::debug(const unsigned image_id,
 
     v_time_spatial_ver_.push_back(time_spatial_ver);
     v_line_inliers_.push_back(double(line_inliers));
+  }
+
+   else if (use_lpm)
+  {
+    auto st_time_spatial_ver = std::chrono::steady_clock::now();
+
+    LPM *lpm_matching = new LPM(lpm_params_);
+    if (lpm_params_.debug_results_)
+      inliers = lpm_matching->DebugMatchLPM(kps,prev_kps_[best_img], kls,prev_kls_[best_img], descs, prev_descs_[best_img],descs_l, prev_descs_l_[best_img], v_images[image_id], v_images[best_img]);
+    else
+      inliers = lpm_matching->MatchLPM(kps,prev_kps_[best_img], kls,prev_kls_[best_img], descs, prev_descs_[best_img],descs_l, prev_descs_l_[best_img]);
+
+    auto diff_time_spatial_ver = std::chrono::steady_clock::now() - st_time_spatial_ver;
+    double time_spatial_ver = std::chrono::duration<double, std::milli>(diff_time_spatial_ver).count();
+
+    v_time_spatial_ver_.push_back(time_spatial_ver);
+    // TODO: solve this, split in pts and line Inliers
+    v_line_inliers_.push_back(double(inliers));
   }
 
   if( inliers < min_inliers_)
@@ -2018,5 +2076,65 @@ cv::Mat LCDetector::DrawMatches(const std::vector<KeyLine> &linesInRight, const 
     cv::resize(cvResultColorImage, cvResultColorImage, cv::Size(2 * imageWidth * scale, imageHeight * scale));
     return cvResultColorImage;
 }
+
+  bool LCDetector::ScoreCompQueryAdapt(const cv::Mat &v_pts_score, const cv::Mat &v_lines_score, std::vector<float> &v_scores)
+  {
+    int min_size = 5;
+    bool evaluate_pts = false;
+    bool evaluate_lines = false;
+    std::cerr << "v_pts_score.rows() : " << v_pts_score.rows << std::endl;
+    std::cerr << "v_lines_score.rows() : " << v_lines_score.rows << std::endl;
+
+    if(v_pts_score.rows > min_size)
+      evaluate_pts = true;
+    if(v_lines_score.rows > min_size)
+      evaluate_lines = true;
+
+    if(!evaluate_pts && !evaluate_lines)
+    {
+      std::cerr << "*** Not able to evaluate Scores ***" << std::endl;
+      return false;
+    }
+
+    // compute Simpsons Integral
+    float inv_integral_pts = 0.0;
+    if (evaluate_pts)
+    {
+      inv_integral_pts = 1/computeIntegral(v_pts_score); 
+    }
+ 
+    float inv_integral_lines = 0.0;
+    if (evaluate_lines)
+    {
+      inv_integral_lines = 1/computeIntegral(v_lines_score);  
+    }
+
+    float sum_inv_areas = inv_integral_pts + inv_integral_lines;
+    float pts_score = inv_integral_pts / sum_inv_areas;
+    float lines_score = inv_integral_lines / sum_inv_areas;
+
+    std::vector<float> pts_n_lines_scores{ pts_score, lines_score};
+    v_scores = pts_n_lines_scores;
+    return true;    
+    
+    // Normalize between 0 and 1??
+    //Compute area under the curve
+
+  }
+  float LCDetector::computeIntegral(const cv::Mat &v_scores)
+  {
+    float h = 1.0;
+
+    float total = v_scores.at<double>(cv::Point(v_scores.rows - 1, 0)) +
+                  v_scores.at<double>(cv::Point(0, 0));
+    for (size_t i = 1; i < v_scores.rows - 1; i++)
+    {
+      if (i % 2 == 0)
+        total +=2 * v_scores.at<double>(cv::Point(i, 0));
+      else 
+        total +=4 * v_scores.at<double>(cv::Point(i, 0));
+    }
+    return total *(h/3.0);
+  }
 
 } // namespace ibow_lcd

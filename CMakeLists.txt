@@ -37,7 +37,21 @@ endif()
 message(STATUS "Compiler flags: ${CMAKE_CXX_FLAGS}")
 
 # Other packages
-find_package(OpenCV REQUIRED) # OpenCV
+# find_package(OpenCV REQUIRED) # OpenCV
+find_package(OpenCV 3.2)
+if(NOT OpenCV_FOUND)
+   find_package(OpenCV 2.4.3 QUIET)
+   if(NOT OpenCV_FOUND)
+      message(FATAL_ERROR "OpenCV > 2.4.3 not found.")
+   endif()
+endif()
+
+if(NOT OpenCV_FOUND)
+   find_package(OpenCV 2.4.3 QUIET)
+   if(NOT OpenCV_FOUND)
+      message(FATAL_ERROR "OpenCV > 2.4.3 not found.")
+   endif()
+endif()
 find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(OpenMP REQUIRED) # OpenMP
 if (OPENMP_FOUND)
@@ -53,6 +67,7 @@ include_directories(include
                     ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/include
                     ${PROJECT_SOURCE_DIR}/thirdparty/LOGOS/src
                     ${PROJECT_SOURCE_DIR}/thirdparty/GMS-Feature-Matcher/include
+                    ${PROJECT_SOURCE_DIR}/thirdparty/lpm_cpp/src
                     )
 
 add_subdirectory( ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib)
@@ -62,6 +77,7 @@ list(APPEND OBINDEX_LIBS  ${PROJECT_SOURCE_DIR}/thirdparty/obindex2/lib/build/li
 list(APPEND MATCHING_LIBS  
 ${PROJECT_SOURCE_DIR}/thirdparty/LOGOS/build/libLOGOS.a 
 ${PROJECT_SOURCE_DIR}/thirdparty/GMS-Feature-Matcher/build/libgms_match.a 
+${PROJECT_SOURCE_DIR}/thirdparty/lpm_cpp/build/libLPM.a 
 )
 # Copy test images to the binary directory
 file(GLOB JSON "evaluation/*.json")

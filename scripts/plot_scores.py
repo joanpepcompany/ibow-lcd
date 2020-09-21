@@ -14,8 +14,12 @@ from os.path import isfile, join
 # Compute Area under the line of a given vector
 def integrate(y_vals, h):
     i = 1
+    print("y_vals:", y_vals)
+    print("y_vals[-1] : ",  y_vals[-1])
+    print("y_vals[0] : ",  y_vals[0])
     total = y_vals[0] + y_vals[-1]
     for y in y_vals[1:-1]:
+        print("y",y)
         if i % 2 == 0:
             total += 2 * y
         else:
